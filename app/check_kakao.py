@@ -26,8 +26,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from trailwalk import geo                                    # noqa: E402
-from trailwalk.providers.base import ProviderError           # noqa: E402
+from trailwalk import geo
+from trailwalk.providers.base import ProviderError
 
 # 서울 좌표 표본. **차도 대조군을 반드시 포함한다** — 차도조차 안 잡히면
 # 커버리지 문제가 아니라 키/도메인 문제다. 이 구분이 이 스크립트의 존재 이유다.

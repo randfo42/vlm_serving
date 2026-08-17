@@ -42,8 +42,9 @@ system turn 이 1바이트라도 달라지면 프리픽스 캐시 적중률이 0
 안 나고 그냥 느려진다(docs/10-client-guide.md §3.1). 문자열을 코드에 두면
 f-string 하나, 공백 하나가 조용히 섞인다. 파일 + 해시 핀이면 바뀐 순간 터진다.
 
-프롬프트를 고쳤으면 SYSTEM_SHA256 을 같이 고치고, **v2 파일을 새로 만든다.**
-같은 파일을 덮어쓰면 예전 평가 결과가 어느 프롬프트로 난 것인지 알 수 없게 된다.
+프롬프트를 고쳤으면 PINS 도 같이 고친다. **판정 기준이 바뀌면 새 버전 파일을
+만든다** — 같은 파일을 덮어쓰면 예전 평가 결과가 어느 프롬프트로 난 것인지
+알 수 없게 된다.
 """
 import hashlib
 import json
@@ -132,7 +133,7 @@ def user_text(*, heading: float | None = None, step: int | None = None) -> str:
     """
     if heading is None:
         return "Assess this scene."
-    return f"Assess this scene. The camera faces {int(round(heading)) % 360} degrees (0=north)."
+    return f"Assess this scene. The camera faces {round(heading) % 360} degrees (0=north)."
 
 
 def fingerprint(version: str = DEFAULT_VERSION) -> dict:

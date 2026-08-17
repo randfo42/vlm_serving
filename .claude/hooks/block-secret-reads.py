@@ -49,10 +49,20 @@ PATH_FIELDS = {
 #           echo "키는 .env 에 둔다"
 # 언급까지 막으면 커밋 메시지도 못 쓰고, 그러면 사람이 훅을 꺼버린다.
 # 그래서 "파일 내용을 꺼낼 수 있는 명령어가 같은 구획에 있는가" 로 좁힌다.
-READERS = r"""cat tac less more head tail bat nl grep egrep fgrep rg ag ack awk sed
-    source eval exec xargs cp mv ln tee dd xxd od strings base64 openssl md5 shasum
-    python python3 node ruby perl php jq yq sqlite3 vim vi nano emacs code open
-    curl wget scp rsync ssh git docker printenv""".split()
+READERS = [
+    # 내용을 그대로 뱉는 것
+    "cat", "tac", "less", "more", "head", "tail", "bat", "nl", "strings", "xxd", "od",
+    # 훑으면서 일부를 뱉는 것
+    "grep", "egrep", "fgrep", "rg", "ag", "ack", "awk", "sed",
+    # 셸에 실행시키는 것 (source 는 값을 환경변수로 올린다)
+    "source", "eval", "exec", "xargs",
+    # 다른 곳으로 옮기는 것 — 옮겨진 사본은 더 이상 gitignore 밖이다
+    "cp", "mv", "ln", "tee", "dd", "scp", "rsync", "curl", "wget", "ssh",
+    # 인터프리터 · 편집기 · 기타
+    "base64", "openssl", "md5", "shasum", "python", "python3", "node", "ruby",
+    "perl", "php", "jq", "yq", "sqlite3", "vim", "vi", "nano", "emacs", "code",
+    "open", "git", "docker", "printenv",
+]
 READER_RE = re.compile(r"(?<![\w.-])(?:" + "|".join(READERS) + r")(?![\w-])")
 
 # `> .env` / `>> .env` — 내용을 꺼내진 않지만 키를 날려버린다. 이것도 막는다.

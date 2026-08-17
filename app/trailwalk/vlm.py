@@ -11,6 +11,7 @@ docs/10-client-guide.md 의 체크리스트를 코드로 옮긴 것이다. 이 �
 원자적·직렬이라 GPU 를 독점하고, -np 4 는 처리량 +20% 에 지연 3.3배다
 (docs/04-b1-results.md §4). 병렬화는 여기가 아니라 서빙 쪽에서 풀 문제다.
 """
+import contextlib
 import json
 import time
 import urllib.error
@@ -193,7 +194,5 @@ class VlmClient:
 
         결과는 버린다. 측정에 섞이면 안 된다.
         """
-        try:
+        with contextlib.suppress(Exception):
             self._call_once(data_uri, "warmup")
-        except Exception:
-            pass

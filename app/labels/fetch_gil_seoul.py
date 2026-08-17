@@ -58,7 +58,8 @@ def _text(s: str) -> str:
 def parse_list(page_html: str) -> list[dict]:
     out = []
     for blk in _ITEM.findall(page_html):
-        m = re.search(r'href="(/trail/view\.do\?key=(\d+)&sc_trailSn=(\d+)&sc_trailSeCd=(\w+))"', blk)
+        m = re.search(
+            r'href="(/trail/view\.do\?key=(\d+)&sc_trailSn=(\d+)&sc_trailSeCd=(\w+))"', blk)
         if not m:
             continue
         name = re.search(r'<span class="ellipsis1">(.*?)</span>', blk, re.S)

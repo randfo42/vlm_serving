@@ -13,17 +13,17 @@
 import argparse
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from trailwalk import prompt as P                      # noqa: E402
-from trailwalk import providers                        # noqa: E402
-from trailwalk.imaging import view_to_data_uri         # noqa: E402
-from trailwalk.runlog import RunLog                    # noqa: E402
-from trailwalk.vlm import DEFAULT_URL, VlmClient       # noqa: E402
-from trailwalk.walk import WalkConfig, walk            # noqa: E402
+from trailwalk import prompt as P
+from trailwalk import providers
+from trailwalk.imaging import view_to_data_uri
+from trailwalk.runlog import RunLog
+from trailwalk.vlm import DEFAULT_URL, VlmClient
+from trailwalk.walk import WalkConfig, walk
 
 APP = Path(__file__).resolve().parent
 
@@ -39,15 +39,16 @@ def main() -> int:
     ap.add_argument("--candidates", type=int, default=WalkConfig.max_candidates,
                     help="한 스텝에서 최대 몇 방향까지 물어볼지 (기본 3)")
     ap.add_argument("--probe-all", dest="probe_all", action="store_true", default=None,
-                    help="후보를 항상 전부 물어본다 (기본: 그래프면 전부, 폴백이면 첫 성공에서 멈춤)")
+                    help="후보를 항상 전부 물어본다 "
+                         "(기본: 그래프면 전부, 폴백이면 첫 성공에서 멈춤)")
     ap.add_argument("--first-hit", dest="probe_all", action="store_false",
                     help="첫 성공에서 멈춘다. 갈림길을 놓치는 대신 호출이 준다")
     ap.add_argument("--schema", default="walk", choices=sorted(P.SCHEMAS),
                     help="walk=is_trail 만(빠름) / eval=+confidence(ROC 용)")
     ap.add_argument("--prompt", default=P.DEFAULT_VERSION, choices=sorted(P.PINS),
-                    help="판정 기준. v2=카메라가 산책로 위에 서 있는가(기본) / "
-                         "v1=프레임에 산책로가 보이는가. 서로 다른 질문이라 "
-                         "두 버전의 런은 직접 비교하지 말 것")
+                    help="판정 기준. v3=카메라가 산책로 위에 서 있는가(기본) / "
+                         "v1=프레임에 산책로가 보이는가 / v2=v3 의 이전판(너무 엄격). "
+                         "서로 다른 질문이라 버전이 다른 런은 직접 비교하지 말 것")
     ap.add_argument("--url", default=DEFAULT_URL)
     ap.add_argument("--headed", action="store_true",
                     help="kakao: 브라우저를 띄운다. 검은 화면이 찍힐 때 첫 확인 수단")
@@ -59,7 +60,7 @@ def main() -> int:
 
     lat, lng = (float(x) for x in a.start.split(","))
     out = Path(a.out) if a.out else (
-        APP / "runs" / f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{a.provider}.jsonl")
+        APP / "runs" / f"{datetime.now(UTC):%Y%m%dT%H%M%SZ}-{a.provider}.jsonl")
 
     cfg = WalkConfig(step_m=a.step_m, max_steps=a.steps,
                      probe_all=a.probe_all, max_candidates=a.candidates)

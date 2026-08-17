@@ -117,8 +117,11 @@ def _candidates(provider, pano: Pano, bearing: float, came_from: str | None,
 
 
 def walk(provider, client, start: tuple[float, float], start_bearing: float,
-         cfg: WalkConfig = WalkConfig(), log=None) -> WalkResult:
+         cfg: WalkConfig | None = None, log=None) -> WalkResult:
     """start 에서 start_bearing 방향으로 출발해 산책로를 따라간다."""
+    # 기본 인자로 WalkConfig() 를 두면 인스턴스 하나가 호출 간에 공유된다.
+    # 지금은 아무도 cfg 를 고치지 않지만, 고치는 순간 다음 런에 조용히 새어 간다.
+    cfg = cfg or WalkConfig()
     res = WalkResult()
     t0 = time.time()
     bearing = geo.norm_deg(start_bearing)

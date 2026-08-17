@@ -4,11 +4,16 @@
 예측: 비전 인코딩이 원자적·직렬이므로 -np 를 올려도
 aggregate throughput 이 거의 오르지 않아야 한다.
 """
-import base64, json, statistics, subprocess, sys, time, urllib.request
+import base64
+import json
+import statistics
+import subprocess
+import sys
+import time
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
-from _paths import ROOT, LLAMA_BIN, MODEL, MMPROJ, build_id, check
+from _paths import LLAMA_BIN, MMPROJ, MODEL, ROOT, build_id, check
 
 IMAGES = sorted((ROOT / "bench" / "images").glob("gen_*.jpg"))
 URL = "http://127.0.0.1:8080"
@@ -19,7 +24,8 @@ SCHEMA = {"type": "object", "properties": {"is_trail": {"type": "boolean"}},
 
 
 def start_server(np_slots, budget=280, ctx_per_slot=4096):
-    log = open(f"/tmp/llama_conc_{np_slots}.log", "w")
+    # Popen 의 stdout 이라 with 로 감쌀 수 없다 (sweep.py 와 같은 이유).
+    log = open(f"/tmp/llama_conc_{np_slots}.log", "w")  # noqa: SIM115
     p = subprocess.Popen([
         str(LLAMA_BIN), "--model", str(MODEL), "--mmproj", str(MMPROJ), "--jinja",
         "-ngl", "99", "--ctx-size", str(ctx_per_slot * np_slots), "--parallel", str(np_slots),
@@ -42,7 +48,8 @@ def ask(img):
     b64 = base64.b64encode(img.read_bytes()).decode()
     body = {"messages": [{"role": "system", "content": SYSTEM},
                          {"role": "user", "content": [
-                             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                             {"type": "image_url",
+                              "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
                              {"type": "text", "text": "Assess this scene."}]}],
             "response_format": {"type": "json_schema",
                                 "json_schema": {"name": "t", "schema": SCHEMA, "strict": True}},

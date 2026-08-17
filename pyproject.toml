@@ -1,0 +1,55 @@
+[project]
+name = "vlm-serving"
+version = "0.1.0"
+description = "Gemma VLM 로컬 서빙 + 로드뷰 산책로 탐색"
+requires-python = ">=3.11"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# pytest — 브라우저도 VLM 서버도 없이 도는 것만 기본으로 돈다.
+#
+# 이 레포의 버그는 대부분 **에러 없이** 일어난다(WEBP 무시, 캐시 미스, 덜 그려진
+# 프레임). 그래서 테스트는 "예외가 안 났다" 가 아니라 **불변식**을 건다.
+# 어느 테스트가 어느 사고에서 나왔는지는 각 파일 상단에 적어 뒀다.
+# ─────────────────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["app/tests"]
+pythonpath = ["app"]
+addopts = "-q --strict-markers"
+markers = [
+    "network: Kakao/VLM 서버가 있어야 도는 테스트. 기본 실행에서 제외된다",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["vendor", "models", ".venv", "app/runs", "bench/results"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes — 미사용 import/변수, 정의 안 된 이름
+    "I",         # isort
+    "B",         # bugbear — 실수하기 쉬운 패턴
+    "UP",        # pyupgrade
+    "SIM",       # 불필요하게 복잡한 분기
+    "RUF",       # ruff 고유 (한글 주석의 전각문자 오탐 방지 포함)
+]
+ignore = [
+    "E741",      # 모호한 변수명(l, I). 측지 계산에서 짧은 이름이 오히려 읽힌다
+    "RUF001",    # 한글 문서에 전각 괄호·기호가 정상적으로 쓰인다
+    "RUF002",
+    "RUF003",
+    # `res.stop_reason = "dead_end"; break` — 종료 이유를 탈출문 옆에 붙여 두는
+    # 의도적인 관용구다. 두 줄로 풀면 walk.py 의 종료 조건이 눈으로 안 잡힌다.
+    # 린트는 울릴 때 진짜여야 쓸모가 있다. 안 그러면 사람이 곧 무시하게 된다.
+    "E702",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 테스트는 의도적으로 이상한 입력을 만든다.
+"app/tests/*" = ["B011"]
+
+[tool.ruff.lint.isort]
+# trailwalk 은 app/ 안의 우리 패키지다. 이걸 안 알려주면 서드파티로 분류돼
+# 테스트마다 import 순서가 어긋난다.
+known-first-party = ["trailwalk", "conftest"]

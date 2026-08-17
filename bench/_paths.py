@@ -41,7 +41,8 @@ def build_id():
 
 def check():
     if not LLAMA_BIN.exists():
-        raise SystemExit(f"llama-server 없음 — {LLAMA_BIN}\n  ./scripts/build-llama.sh 를 먼저 실행한다.")
+        raise SystemExit(f"llama-server 없음 — {LLAMA_BIN}\n"
+                         f"  ./scripts/build-llama.sh 를 먼저 실행한다.")
     for f in (MODEL, MMPROJ):
         if not f.exists():
             raise SystemExit(f"모델 없음 — {f}")

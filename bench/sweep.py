@@ -4,17 +4,25 @@
 서버를 예산별로 재기동하며 구간 분해(t_prefill / t_decode)를 잰다.
 캐시 오염을 피하려고 매 요청 서로 다른 이미지를 쓴다.
 """
-import base64, json, subprocess, sys, time, urllib.request, urllib.error, statistics
-from pathlib import Path
+import base64
+import json
+import statistics
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
 
-from _paths import ROOT, LLAMA_BIN, MODEL, MMPROJ, build_id, check
+from _paths import LLAMA_BIN, MMPROJ, MODEL, ROOT, build_id, check
 
 IMAGES = sorted((ROOT / "bench" / "images").glob("gen_*.jpg"))
 URL = "http://127.0.0.1:8080"
 
+# ⚠️ 바이트 고정. 줄바꿈을 바꾸면 문자열이 바뀌고 예전 벤치 수치와 비교가 끊긴다.
+# 그래서 E501 을 고치지 않고 예외로 둔다 — 재배치가 곧 데이터 손상이다.
 SYSTEM = ("You are a walking-trail assessor. Given a single street-level photo, judge whether the "
-          "scene is a pleasant walking trail suitable for a leisurely stroll. Consider: presence of a "
-          "walkable path, greenery, separation from vehicle traffic, and overall pedestrian comfort. "
+          "scene is a pleasant walking trail suitable for a leisurely stroll. Consider: presence of a "  # noqa: E501
+          "walkable path, greenery, separation from vehicle traffic, and overall pedestrian comfort. "  # noqa: E501
           "Answer only with the requested JSON. Be decisive.")
 
 SCHEMAS = {
@@ -22,7 +30,8 @@ SCHEMAS = {
              "required": ["is_trail"], "additionalProperties": False},
     "min":  {"type": "object", "properties": {
                 "is_trail": {"type": "boolean"}, "confidence": {"type": "number"},
-                "surface": {"type": "string", "enum": ["paved", "dirt", "gravel", "mixed", "unknown"]}},
+                "surface": {"type": "string",
+                            "enum": ["paved", "dirt", "gravel", "mixed", "unknown"]}},
              "required": ["is_trail", "confidence", "surface"], "additionalProperties": False},
 }
 
@@ -31,7 +40,9 @@ def start_server(budget, ubatch=2048):
     # 여기서만 --image-min-tokens = budget 으로 둔다 (운영은 min=1).
     # 예산별 토큰 수를 정확히 고정해야 스윕 축이 깨끗해지기 때문이다.
     # 운영 설정과 다르다는 점 주의. → docs/11-server-ops.md §3.3
-    log = open(f"/tmp/llama_sweep_{budget}.log", "w")
+    # 이 핸들은 Popen 의 stdout 이라 with 로 감쌀 수 없다 — 블록을 나가며 닫히면
+    # 서버 로그가 통째로 사라진다. 프로세스가 끝날 때 같이 닫힌다.
+    log = open(f"/tmp/llama_sweep_{budget}.log", "w")  # noqa: SIM115
     p = subprocess.Popen([
         str(LLAMA_BIN), "--model", str(MODEL), "--mmproj", str(MMPROJ), "--jinja",
         "-ngl", "99", "--ctx-size", "8192", "--parallel", "1",
@@ -42,7 +53,8 @@ def start_server(budget, ubatch=2048):
     ], stdout=log, stderr=subprocess.STDOUT)
     for _ in range(180):
         if p.poll() is not None:
-            raise RuntimeError(f"server died (budget={budget}, ub={ubatch}) — see /tmp/llama_sweep_{budget}.log")
+            raise RuntimeError(f"server died (budget={budget}, ub={ubatch}) — "
+                               f"see /tmp/llama_sweep_{budget}.log")
         try:
             urllib.request.urlopen(f"{URL}/health", timeout=1).read()
             return p
@@ -70,12 +82,14 @@ def ask(img_path, schema):
 
 def main():
     check()
-    budgets = [int(x) for x in (sys.argv[1].split(",") if len(sys.argv) > 1 else [70, 140, 280, 560, 1120])]
+    budgets = [int(x) for x in (sys.argv[1].split(",") if len(sys.argv) > 1
+                                else [70, 140, 280, 560, 1120])]
     schema_name = sys.argv[2] if len(sys.argv) > 2 else "min"
     schema = SCHEMAS[schema_name]
     build = build_id()
     print(f"build={build}  schema={schema_name}  images={len(IMAGES)}\n")
-    hdr = f"{'budget':>7} {'prompt_tok':>11} {'prefill_ms':>11} {'out_tok':>8} {'decode_ms':>10} {'total_s':>8} {'img/s':>7}"
+    hdr = (f"{'budget':>7} {'prompt_tok':>11} {'prefill_ms':>11} {'out_tok':>8} "
+           f"{'decode_ms':>10} {'total_s':>8} {'img/s':>7}")
     print(hdr); print("-" * len(hdr))
     results = []
     for b in budgets:
@@ -92,7 +106,8 @@ def main():
             dn = statistics.median(r[2] for r in rows)
             dm = statistics.median(r[3] for r in rows)
             tot = (pm + dm) / 1000
-            print(f"{b:>7} {pn:>11.0f} {pm:>11.0f} {dn:>8.0f} {dm:>10.0f} {tot:>8.2f} {1/tot:>7.2f}")
+            print(f"{b:>7} {pn:>11.0f} {pm:>11.0f} {dn:>8.0f} {dm:>10.0f} "
+                  f"{tot:>8.2f} {1/tot:>7.2f}")
             results.append(dict(budget=b, prompt_tok=pn, prefill_ms=pm, out_tok=dn, decode_ms=dm))
         finally:
             srv.terminate(); srv.wait(timeout=30)

@@ -59,7 +59,7 @@ def report(path: Path) -> int:
             continue
         m = LINE.match(raw)
         if not m:
-            print(f"  ⚠ 파싱 불가한 줄이 있다 (KEY=VALUE 형식이 아님)")
+            print("  ⚠ 파싱 불가한 줄이 있다 (KEY=VALUE 형식이 아님)")
             continue
         name, value = m.group(1), unquote(m.group(2))
         n += 1

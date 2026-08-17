@@ -13,7 +13,7 @@
 """
 import json
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -24,7 +24,7 @@ class RunLog:
         self._f = self.path.open("w", encoding="utf-8")
         self._t0 = time.time()
         self._write({"type": "run_start",
-                     "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                     "ts": datetime.now(UTC).isoformat(timespec="seconds"),
                      **header})
 
     def _write(self, obj: dict) -> None:

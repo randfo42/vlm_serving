@@ -55,7 +55,7 @@ def _encode(img: Image.Image) -> str:
         w, h = img.size
         want = TARGET_SIZE[0] / TARGET_SIZE[1]
         if abs(w / h - want) > 1e-3:
-            cw, ch = (int(round(h * want)), h) if w / h > want else (w, int(round(w / want)))
+            cw, ch = (round(h * want), h) if w / h > want else (w, round(w / want))
             img = img.crop(((w - cw) // 2, (h - ch) // 2, (w - cw) // 2 + cw, (h - ch) // 2 + ch))
         img = img.resize(TARGET_SIZE, Image.LANCZOS)
     buf = io.BytesIO()

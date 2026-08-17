@@ -29,6 +29,7 @@ Kakao 앱키는 **도메인 등록제**다. `file://` 로 열면 SDK 가 거부�
 - 이미지 저장은 Kakao 운영정책상 회색지대다. 연구용 로컬 실행 범위를 넘기기 전에
   docs/23-open-questions.md §2 를 볼 것.
 """
+import contextlib
 import json
 import threading
 import time
@@ -416,7 +417,7 @@ class KakaoProvider:
     def close(self) -> None:
         for shut in (lambda: self._browser.close(), lambda: self._pw.stop(),
                      lambda: self._httpd.shutdown()):
-            try:
+            # 하나가 실패해도 나머지는 닫아야 한다. 브라우저가 이미 죽어 있어도
+            # 로컬 HTTP 서버 스레드는 반드시 내려가야 프로세스가 끝난다.
+            with contextlib.suppress(Exception):
                 shut()
-            except Exception:
-                pass

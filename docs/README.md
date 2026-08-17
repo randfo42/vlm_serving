@@ -50,6 +50,7 @@ VLM 서빙 — 로드뷰 이미지 1장을 받아 구조화된 시각 판정 1�
 | `06-logging.md` | 어떻게 기록할 것인가. JSONL 스키마, 알람 조건 |
 | **`10-client-guide.md`** | **클라이언트 사용법** |
 | **`11-server-ops.md`** | **서버 운영** |
+| **`12-harness.md`** | **테스트 · 린트 · 커밋 전 리뷰 훅** |
 | `../app/docs/` | **애플리케이션(trailwalk) 문서 — 20번대** |
 | `../../doc/llama_cpp_vs_vllm_batching.md` | 배칭/KV/attention 커널 사전 조사 (프로젝트 이전) |
 

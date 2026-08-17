@@ -11,3 +11,13 @@ playwright>=1.48
 
 # equirect_to_view() 전용. 렌더된 뷰포트만 쓰는 provider 에서는 필요 없다.
 numpy>=2.0
+
+# ── 개발용 (하네스) ────────────────────────────────────────────────────────
+#
+#   uv pip install --python .venv/bin/python pytest ruff
+#   .venv/bin/python -m pytest    # 139개 · 0.8초. 브라우저도 서버도 필요 없다
+#   .venv/bin/ruff check .
+#
+# 설정은 루트 pyproject.toml 에 있다. → docs/12-harness.md
+pytest>=8
+ruff>=0.7

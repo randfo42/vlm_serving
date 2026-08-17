@@ -11,6 +11,17 @@
             "statusMessage": "비밀값 접근 검사"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/review-on-commit.py\"",
+            "statusMessage": "커밋 전 검사 (ruff · pytest · 리뷰 에이전트)",
+            "timeout": 300
+          }
+        ]
       }
     ]
   }
