@@ -46,7 +46,8 @@
 - ✅ 프롬프트를 서빙 → 애플리케이션으로 이관. 파일 + 해시 핀
 - ✅ 레이블 150건 수집 (`labels/trails.json`)
 - ✅ 비밀값 취급 정리. `app/.env` + 읽기 차단 훅 + 값 없는 점검 창구 (`20-app-design.md` §9)
-- ⬜ **Kakao 로드뷰 미검증** — 키는 들어왔으나 **REST 키인지 JS 키인지 미확인**.
-  로드뷰는 JS 키를 요구한다. 유일한 진짜 블로커 (`23-open-questions.md` §1)
+- ✅ Playwright/chromium 설치, JS 키 등록, Web 도메인 등록까지 확인
+- 🔴 **Kakao 로드뷰 여전히 미검증** — 앱에서 **카카오맵 제품이 비활성**이라
+  SDK 가 로드되지 않는다. 콘솔에서 켜는 것 하나가 남았다 (`23-open-questions.md` §1)
 - ⬜ 코스 폴리라인 없음 → 정량 평가 불가 (`22-labels.md` §2)
 - ⬜ `confidence` 변별력 없음 (`23-open-questions.md` §5)

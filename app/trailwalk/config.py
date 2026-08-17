@@ -22,8 +22,13 @@ from pathlib import Path
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 _LINE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$")
 
-# Kakao 키 이름. 콘솔이 부르는 이름과 사람마다 쓰는 이름이 갈려서 둘 다 받는다.
-KAKAO_KEY_NAMES = ("KAKAO_MAP_API_KEY", "KAKAO_JS_KEY")
+# Kakao **JavaScript** 키의 이름 후보. 순서가 곧 우선순위다.
+#
+# REST 키 이름(KAKAO_MAP_REST_API_KEY)은 일부러 넣지 않는다. 둘 다 32자 16진수라
+# 값으로는 구별되지 않으므로, 실수로 REST 키가 여기 끼면 SDK 가 조용히 로드에
+# 실패하고 증상은 "로드뷰가 안 뜬다" 로만 보인다 — 커버리지 문제로 오인하기 딱 좋다.
+# 이름으로 갈라놓는 것이 이 혼동을 막는 유일한 수단이다.
+KAKAO_KEY_NAMES = ("KAKAO_MAP_JS_API_KEY", "KAKAO_JS_KEY", "KAKAO_MAP_API_KEY")
 
 
 def _unquote(v: str) -> str:
@@ -82,4 +87,15 @@ def kakao_appkey() -> str:
     로드되다 실패하고, 증상은 "로드뷰가 안 뜬다" 로만 보여서 커버리지 문제로
     오인하기 쉽다. → app/docs/23-open-questions.md §1
     """
+    load_env()
+    # REST 키만 있는 상태를 조용히 넘기지 않는다. 이 경우 require() 는 "키가 없다"
+    # 는 엉뚱한 안내를 하게 되는데, 실제 문제는 "키 종류가 틀렸다" 이다.
+    if not any(os.environ.get(n, "").strip() for n in KAKAO_KEY_NAMES) \
+            and os.environ.get("KAKAO_MAP_REST_API_KEY", "").strip():
+        raise RuntimeError(
+            "REST API 키만 있다. 로드뷰는 **JavaScript 키**를 요구한다 —\n"
+            "  kakao.maps.Roadview 는 JS SDK 에만 있고 SDK 로더의 appkey 는 JS 키를 받는다.\n"
+            f"  {ENV_FILE} 에 KAKAO_MAP_JS_API_KEY 를 추가할 것.\n"
+            "  두 키는 둘 다 32자 16진수라 값으로는 구별되지 않는다. 콘솔 > 내 애플리케이션\n"
+            "  > 앱 키 에서 'JavaScript 키' 항목을 확인할 것.")
     return require(*KAKAO_KEY_NAMES, what="Kakao JavaScript 키")

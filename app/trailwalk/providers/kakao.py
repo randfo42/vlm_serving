@@ -26,12 +26,68 @@ Kakao 앱키는 **도메인 등록제**다. `file://` 로 열면 SDK 가 거부�
 - 이미지 저장은 Kakao 운영정책상 회색지대다. 연구용 로컬 실행 범위를 넘기기 전에
   docs/23-open-questions.md §2 를 볼 것.
 """
+import json
 import threading
+import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from .base import Pano, ProviderError
 
 VIEW_W, VIEW_H = 1280, 720   # 16:9 — imaging.TARGET_SIZE 와 맞춰 리사이즈를 무해하게
+
+SDK_URL = "https://dapi.kakao.com/v2/maps/sdk.js?appkey={key}&autoload=false"
+
+
+def diagnose_sdk(appkey: str, origin: str) -> str:
+    """SDK 가 왜 로드되지 않았는지 서버 쪽에서 직접 물어본다.
+
+    브라우저 안에서는 알 수 없다. 인증에 실패하면 Kakao 가 JS 대신 JSON 에러를
+    돌려주는데, 크롬은 그 응답을 `<script>` 로 받는 것을 거부하고
+    `net::ERR_BLOCKED_BY_ORB` 로 통째로 막아버린다. **에러 내용이 사라진다.**
+    30초 타임아웃만 남아서 원인을 짐작할 수 없게 된다.
+
+    그래서 같은 URL 을 같은 Referer 로 파이썬에서 한 번 더 받아 본문을 읽는다.
+    실제로 나오는 것들:
+
+      403 NotAuthorizedError  "App(...) disabled OPEN_MAP_AND_LOCAL service."
+          → 콘솔 > 앱 > 제품 설정 > 카카오맵 을 **활성화**해야 한다.
+            도메인 문제가 아니다 (도메인이 틀리면 아래 401 이 나온다)
+      401 AccessDeniedError   "domain mismatched! caller=..."
+          → 플랫폼 > Web 사이트 도메인에 그 origin 을 등록해야 한다.
+            127.0.0.1 과 localhost 는 **다른 도메인으로 취급된다**
+      401                     appkey 자체가 틀림 (REST 키를 넣은 경우 등)
+
+    반환값에 키 값이 섞이지 않게 마스킹한다.
+    """
+    req = urllib.request.Request(
+        SDK_URL.format(key=appkey),
+        headers={"Referer": origin + "/", "Origin": origin, "User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            body = r.read(2000).decode("utf-8", "replace")
+        if "kakao" in body and r.status == 200:
+            return "SDK 자체는 정상 응답한다 — 렌더/네트워크 쪽을 의심할 것"
+        status, detail = r.status, body
+    except urllib.error.HTTPError as e:
+        status, detail = e.code, e.read(2000).decode("utf-8", "replace")
+    except Exception as e:
+        return f"SDK URL 을 확인하지 못했다 ({type(e).__name__}: {e})"
+
+    try:
+        msg = json.loads(detail).get("message", detail)
+    except Exception:
+        msg = detail[:300]
+    msg = msg.replace(appkey, "<KEY>")
+
+    hint = ""
+    if "disabled" in msg and "MAP" in msg.upper():
+        hint = ("\n  → 앱에서 **카카오맵 서비스가 꺼져 있다.** 키나 도메인 문제가 아니다.\n"
+                "     콘솔 > 내 애플리케이션 > 제품 설정 > 카카오맵 > 활성화 설정 ON")
+    elif "domain" in msg.lower():
+        hint = (f"\n  → 플랫폼 > Web > 사이트 도메인에 `{origin}` 을 등록할 것.\n"
+                "     127.0.0.1 과 localhost 는 다른 도메인으로 취급된다")
+    return f"HTTP {status} · {msg}{hint}"
 
 _PAGE = """<!DOCTYPE html>
 <html><head><meta charset="utf-8">
@@ -127,9 +183,17 @@ class KakaoProvider:
             # WebGL 을 소프트웨어로라도 그리게 한다. 완전 headless 에서 검은 화면이
             # 나오는 가장 흔한 원인이 GPU 컨텍스트 부재다.
             args=["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"])
+        self._origin = f"http://{host}:{port}"
         self._page = self._browser.new_page(viewport={"width": VIEW_W, "height": VIEW_H})
-        self._page.goto(f"http://{host}:{port}/", wait_until="load")
-        self._page.wait_for_function("window.__ready && window.__ready()", timeout=30_000)
+        self._page.goto(self._origin + "/", wait_until="load")
+        try:
+            self._page.wait_for_function("window.__ready && window.__ready()", timeout=20_000)
+        except Exception:
+            # 여기서 그냥 타임아웃을 던지면 "20초 기다렸는데 안 됨" 뿐이라 아무 도움이
+            # 안 된다. 실패의 진짜 이유는 브라우저 밖에서만 알 수 있다 (diagnose_sdk).
+            reason = diagnose_sdk(appkey, self._origin)
+            self.close()
+            raise ProviderError(f"Kakao SDK 가 로드되지 않았다.\n  {reason}") from None
 
     def nearest(self, lat: float, lng: float, radius_m: float) -> Pano | None:
         pid = self._page.evaluate(

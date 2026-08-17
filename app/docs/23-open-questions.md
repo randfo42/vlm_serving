@@ -12,28 +12,64 @@
 Kakao 가 공원·좁은 산책로를 배낭형 장비로 도보 촬영한다는 **2차 자료**는 있지만
 공식 확인은 못 했다 (`21-roadview-providers.md` §1.4).
 
-### 막고 있는 것
+### 막고 있는 것 (2026-08-17 실측으로 갱신)
 
 | | 상태 |
 |---|---|
-| Kakao 앱키 | 🟡 `app/.env` 의 `KAKAO_MAP_API_KEY` 에 32자 값이 들어옴. **종류 미확인** (아래) |
-| 플랫폼 도메인 등록 | ⬜ 콘솔 > 플랫폼 > Web 에 `http://127.0.0.1:8731` |
-| Playwright | ⬜ `pip install -r app/requirements.txt && playwright install chromium` |
+| Playwright + chromium | ✅ 설치됨. headless/headed 둘 다 기동 확인 |
+| Kakao **JavaScript** 키 | ✅ `KAKAO_MAP_JS_API_KEY` 로 분리해 등록됨 |
+| 플랫폼 Web 도메인 등록 | ✅ `http://127.0.0.1:8731` 등록 확인됨 |
+| **카카오맵 서비스 활성화** | 🔴 **꺼져 있다. 여기서 막혔다** |
 
-#### ⚠️ 등록된 키가 REST API 키일 가능성
+#### 🔴 앱에서 카카오맵 서비스가 비활성 상태다
 
-키를 넣으며 "REST api key" 라고 했는데, **로드뷰는 JavaScript 키를 요구한다.**
-`kakao.maps.Roadview` 는 JS SDK 에만 있고, SDK 로더의 `appkey` 파라미터는
-JavaScript 키를 받는다. REST 키로는 SDK 가 로드되지 않는다.
+```
+HTTP 403  NotAuthorizedError
+{"message": "App(VLM) disabled OPEN_MAP_AND_LOCAL service."}
+```
 
-콘솔의 앱 키 화면에는 네이티브/REST/JavaScript/Admin 키가 나란히 있고 **전부
-32자 16진수라 값만 보고는 구별되지 않는다.** 자동으로 검증할 방법이 없다.
+**할 일:** 콘솔 > 내 애플리케이션 > 제품 설정 > **카카오맵** > 활성화 설정 ON.
 
-증상이 고약하다 — 잘못된 키를 넣으면 SDK 로드가 실패하고, 화면에는 아무것도
-안 뜬다. 그러면 "이 좌표에 로드뷰 커버리지가 없다" 로 오인하기 딱 좋다.
-**§1 의 커버리지 확인을 하기 전에 키 종류부터 확정할 것.**
+키 문제도 도메인 문제도 아니다. 앱 자체는 살아 있고 도메인도 등록돼 있는데,
+그 앱에서 지도/로컬 제품이 켜져 있지 않다.
+
+#### 도메인은 등록돼 있다 — 그리고 127.0.0.1 ≠ localhost
+
+같은 요청을 Referer 만 바꿔 보내면 갈린다:
+
+| Referer | 응답 |
+|---|---|
+| `http://127.0.0.1:8731` | 403 `disabled OPEN_MAP_AND_LOCAL service` |
+| `http://localhost:8731` | 401 `domain mismatched! ... check out registered web domains` |
+
+127.0.0.1 이 등록돼 있다는 증거다(등록이 안 됐다면 여기도 401 이 났을 것).
+동시에 **Kakao 는 `127.0.0.1` 과 `localhost` 를 다른 도메인으로 취급한다.**
+provider 가 `127.0.0.1` 로 고정하는 이유다.
+
+#### ⚠️ 브라우저 안에서는 이 에러가 보이지 않는다 — 중요
+
+인증에 실패하면 Kakao 는 JS 대신 **JSON 에러**를 돌려준다. 크롬은 그 응답을
+`<script>` 로 받기를 거부하고 `net::ERR_BLOCKED_BY_ORB` 로 통째로 막는다.
+**에러 내용이 사라진다.** 남는 것은 "SDK 가 안 뜬다" 는 침묵뿐이다.
+
+이걸 모르면 원인 넷(키·도메인·서비스 활성화·커버리지)을 구분할 방법이 없다.
+그래서 `providers/kakao.py` 의 `diagnose_sdk()` 가 **같은 URL 을 같은 Referer 로
+파이썬에서 한 번 더 받아** 본문을 읽는다. 20초 침묵 대신 위의 403 메시지가 나온다.
 
 ### 확인 순서
+
+서비스를 켠 뒤, 탐색을 돌리기 전에 진단부터:
+
+```bash
+python app/check_kakao.py            # 좌표 6곳 · VLM 없이 · 20초
+python app/check_kakao.py --headed   # 검은 화면이 의심되면
+```
+
+차도 대조군을 포함한 6개 표본에서 pano 가 잡히는지, 실제로 그려지는지
+(픽셀 분산으로 판정), 스냅 거리가 얼마인지를 표로 준다. **차도까지 실패하면
+커버리지 문제가 아니다** — 이 구분이 진단의 핵심이다.
+
+그 다음:
 
 ```bash
 python app/run_walk.py --provider kakao \

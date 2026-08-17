@@ -45,9 +45,21 @@ python app/run_walk.py --provider fixture --start 37.5665,126.9780 --bearing 90 
 ```bash
 cp app/.env.example app/.env      # 값을 채운다
 playwright install chromium
+
+python app/check_kakao.py         # ← 먼저 이것. 진단 전용, VLM 불필요
 python app/run_walk.py --provider kakao \
     --start 37.5768,127.0246 --bearing 90 --steps 20 --headed
 ```
+
+`check_kakao.py` 는 서울 좌표 6곳(**차도 대조군 포함**)에서 pano 가 잡히는지,
+실제로 그려지는지를 표로 준다. 차도까지 실패하면 커버리지가 아니라 설정 문제다.
+
+콘솔에서 켜야 하는 것이 **두 가지**다. 하나만 해도 증상은 똑같이 "안 뜸" 이다:
+
+| | 위치 |
+|---|---|
+| 카카오맵 제품 활성화 | 내 애플리케이션 > 제품 설정 > 카카오맵 > 활성화 설정 |
+| Web 사이트 도메인 | 플랫폼 > Web > `http://127.0.0.1:8731` (`localhost` 는 별개 도메인) |
 
 > ⚠️ **REST API 키가 아니라 JavaScript 키다.** 콘솔의 앱 키 화면에 네 종류가
 > 나란히 있고 전부 32자라 겉으로 구별되지 않는다. 잘못 넣으면 증상이

@@ -56,7 +56,15 @@ def main() -> int:
     cfg = WalkConfig(step_m=a.step_m, max_steps=a.steps,
                      probe_sides_every=a.probe_sides_every)
     client = VlmClient(url=a.url, schema_name=a.schema)
-    prov = providers.make(a.provider, headless=not a.headed)
+    try:
+        prov = providers.make(a.provider, headless=not a.headed)
+    except (providers.ProviderError, RuntimeError) as e:
+        # 설정 문제(키·도메인·서비스 활성화)는 버그가 아니다. 스택트레이스를
+        # 쏟아내면 정작 읽어야 할 안내가 묻힌다.
+        print(f"✗ {e}", file=sys.stderr)
+        if a.provider == "kakao":
+            print("\n진단을 자세히 보려면: python app/check_kakao.py --headed", file=sys.stderr)
+        return 2
 
     header = {"provider": prov.name, "schema": a.schema, "url": a.url,
               "start": [lat, lng], "start_bearing": a.bearing,
