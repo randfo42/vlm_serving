@@ -1,0 +1,22 @@
+# 모델 가중치 — 절대 커밋하지 않는다 (수 GB)
+models/
+*.gguf
+
+# 벤치 결과물 / 평가 이미지
+bench/results/
+data/images/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# llama.cpp 소스/빌드 — 커밋하지 않는다 (소스 206MB + 빌드 174MB).
+# 진실은 configs/llama.pin 의 커밋 해시이고,
+# scripts/build-llama.sh 가 그 커밋으로 재현한다.
+vendor/llama.cpp/
+
+# macOS
+.DS_Store

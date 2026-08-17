@@ -1,0 +1,9 @@
+# 이 레포가 고정한 llama.cpp 버전.
+#
+# 이 값을 바꾸면 docs/04-b1-results.md 의 모든 수치가 무효가 된다.
+# 올릴 때는 docs/11-server-ops.md §8 업그레이드 절차를 따른다.
+#
+# TAG    : git tag (릴리스 번호와 동일)
+# COMMIT : 태그가 가리키는 커밋. 태그가 재작성돼도 이 값이 진실이다.
+TAG=b10450
+COMMIT=ece963f41b0b02d7a0d61436ae365762c073a4c8
