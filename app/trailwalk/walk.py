@@ -90,7 +90,16 @@ def walk(provider, client, start: tuple[float, float], start_bearing: float,
         if time.time() - t0 > cfg.max_seconds:
             res.stop_reason = "time_budget"; break
 
-        pano = provider.nearest(pos[0], pos[1], cfg.snap_radius_m)
+        try:
+            pano = provider.nearest(pos[0], pos[1], cfg.snap_radius_m)
+        except Exception as e:
+            # provider 가 스스로 이상을 알린 경우(위치 갱신 지연 등). 조용히
+            # 넘기면 엉뚱한 좌표에서 탐색이 계속되므로 여기서 멈춘다.
+            if log:
+                log.event("provider_error", step=res.steps,
+                          error=f"{type(e).__name__}: {str(e).splitlines()[0]}")
+            res.stop_reason = "provider_error"
+            break
         if pano is None:
             # 로드뷰가 없는 구간. 산책로가 끝난 것과 구분되지 않는다 —
             # 판정 정확도를 볼 때 이 둘을 섞지 말 것.

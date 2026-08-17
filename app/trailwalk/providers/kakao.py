@@ -92,7 +92,20 @@ def diagnose_sdk(appkey: str, origin: str) -> str:
 _PAGE = """<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <style>html,body{margin:0;padding:0;background:#000}
-#rv{width:%dpx;height:%dpx}</style>
+#rv{width:%dpx;height:%dpx}
+/* 로드뷰 오버레이 UI 를 화면에서 걷어낸다. 전부 캔버스가 아니라 별도 DOM
+   레이어라 CSS 로 지워진다.
+
+   왜 지우는가: 흰 방향 화살표가 보행로 한가운데를 덮는다. 모델에게 "이 장면이
+   산책로인가" 를 묻는데 정작 길이 UI 에 가려지면 그건 모델 탓이 아니다.
+   줌 버튼과 워터마크도 매 프레임 같은 자리에 찍혀 순수한 노이즈다.
+
+   ID 접미사(_al_737 의 737)는 세션마다 바뀌므로 **접두사로** 잡아야 한다. */
+#rv [id^="_al_"],              /* 인접 pano 방향 화살표 */
+#rv [id^="_box_util_"],        /* 줌 · 나침반 */
+#rv [id^="_mm_"],              /* 미니맵 */
+#rv [id^="_kakao_copyright_"],
+#rv [id^="_extra_copyright_"] { display: none !important; }</style>
 <script src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=%s&autoload=false"></script>
 </head><body>
 <div id="rv"></div>
@@ -114,29 +127,49 @@ window.__nearest = function (lat, lng, radius) {
   });
 };
 
+function curPano() {
+  try { var p = rv.getPanoId(); return p === null || p === undefined ? '' : String(p); }
+  catch (e) { return ''; }
+}
+
 // panoId + pan 으로 화면을 세팅하고, 렌더가 끝나면 실제 좌표를 돌려준다.
-// init 은 pano 가 바뀔 때만 뜨므로 같은 pano 면 viewpoint 만 바꾸고 바로 끝낸다.
+//
+// 이벤트를 기다리지 않고 **폴링한다.** 처음엔 'init' 을 기다렸는데, Kakao 의
+// init 은 로드뷰가 최초로 초기화될 때 딱 한 번만 뜬다. 두 번째 pano 부터는
+// 영영 오지 않아서 전부 타임아웃했다 (첫 좌표만 성공하고 나머지는 실패).
+// pano 전환 이벤트 이름은 SDK 버전에 따라 갈리므로, getPanoId() 가 목표값이
+// 되는지 직접 보는 편이 이름 추측보다 튼튼하다.
 window.__show = function (panoId, pan) {
   return new Promise(function (resolve, reject) {
-    var to = setTimeout(function () { reject('timeout'); }, 15000);
-    var done = function () {
-      clearTimeout(to);
-      var p = rv.getPosition();
-      // 브라우저가 실제로 프레임을 그릴 틈을 준다. 이걸 빼면 검은 화면을 찍는다.
-      requestAnimationFrame(function () { requestAnimationFrame(function () {
-        setTimeout(function () { resolve({lat: p.getLat(), lng: p.getLng()}); }, 250);
-      }); });
-    };
-    if (String(rv.getPanoId()) === String(panoId)) {
-      rv.setViewpoint({pan: pan, tilt: 0, zoom: 0});
-      done();
-    } else {
-      kakao.maps.event.addListener(rv, 'init', function handler() {
+    var target = String(panoId);
+    var deadline = Date.now() + 12000;
+    if (curPano() !== target) { rv.setPanoId(Number(panoId), null); }
+    (function poll() {
+      if (curPano() === target) {
         rv.setViewpoint({pan: pan, tilt: 0, zoom: 0});
-        done();
-      });
-      rv.setPanoId(Number(panoId), null);
-    }
+        // 브라우저가 실제로 프레임을 그릴 틈을 준다. 이걸 빼면 검은 화면을 찍는다.
+        requestAnimationFrame(function () { requestAnimationFrame(function () {
+          setTimeout(function () {
+            // ⚠️ 좌표는 **여기서** 읽는다. panoId 가 먼저 바뀌고 위치는 뒤늦게
+            // 따라오기 때문에, 전환 직후에 읽으면 이전 pano 의 좌표나 NaN 이
+            // 나온다. 실제로 스냅 거리가 반경 50m 인데 수 km 로 찍혔다.
+            var p = rv.getPosition();
+            var la = p.getLat(), ln = p.getLng();
+            if (!isFinite(la) || !isFinite(ln)) {
+              reject('pano ' + target + ' 의 좌표가 아직 유효하지 않다');
+              return;
+            }
+            resolve({lat: la, lng: ln, panoId: curPano()});
+          }, 400);
+        }); });
+        return;
+      }
+      if (Date.now() > deadline) {
+        reject('pano ' + target + ' 로 전환되지 않았다 (현재 "' + curPano() + '")');
+        return;
+      }
+      setTimeout(poll, 100);
+    })();
   });
 };
 </script></body></html>
@@ -207,6 +240,18 @@ class KakaoProvider:
         # 여기서 pano 를 올려두면 곧바로 이어지는 capture 는 같은 panoId 라
         # viewpoint 만 바꾸고 끝난다 — 렌더 비용이 두 배가 되지 않는다.
         pos = self._page.evaluate("([p]) => window.__show(p, 0)", [pid])
+
+        # 스냅 결과가 요청 반경 안에 있는지 확인한다. getNearestPanoId 는 반경을
+        # 지키므로, 여기서 크게 벗어나면 좌표를 잘못 읽은 것이다 — 실제로 위치가
+        # panoId 보다 늦게 갱신되는 탓에 50m 반경에서 수 km 가 나온 적이 있다.
+        # 이걸 그냥 넘기면 탐색이 엉뚱한 곳으로 순간이동하면서도 계속 도는데,
+        # 로그만 봐서는 멀쩡해 보여서 알아채기 어렵다.
+        from ..geo import haversine_m
+        off = haversine_m((lat, lng), (pos["lat"], pos["lng"]))
+        if off > max(radius_m * 3, radius_m + 50):
+            raise ProviderError(
+                f"pano 스냅 위치가 요청 반경을 크게 벗어났다: {off:.0f}m (반경 {radius_m:.0f}m).\n"
+                f"  로드뷰 위치 갱신이 늦은 것으로 보인다 — pano={pid}")
         return Pano(pano_id=pid, lat=pos["lat"], lng=pos["lng"])
 
     def capture(self, pano: Pano, heading: float, fov_deg: float) -> bytes:

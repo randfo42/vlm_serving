@@ -104,7 +104,10 @@ def main() -> int:
             try:
                 pano = prov.nearest(lat, lng, a.radius)
             except Exception as e:
-                rows.append((name, "오류", f"{type(e).__name__}", "", ""))
+                # 예외 **메시지**가 진단의 전부다. 타입만 남기면 Playwright 의
+                # 'Error' 하나로 뭉개져 아무것도 알 수 없다 (실제로 한 번 그랬다).
+                msg = str(e).replace(key, "<KEY>").splitlines()
+                rows.append((name, "오류", "-", "-", msg[0][:70] if msg else type(e).__name__))
                 continue
             if pano is None:
                 rows.append((name, "없음", "-", "-", "로드뷰 미촬영"))
