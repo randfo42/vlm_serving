@@ -26,6 +26,9 @@ cd .. && ./configs/smoke.sh
 ```bash
 pip install -r app/requirements.txt
 python app/run_walk.py --provider fixture --start 37.5665,126.9780 --bearing 90 --steps 6
+
+# 갈래를 전부 도는 분기 탐색은 이쪽 (docs/20-app-design.md §3.5)
+python app/run_explore.py --provider fixture --start 37.5665,126.9780 --max-calls 12
 ```
 
 기대 출력:

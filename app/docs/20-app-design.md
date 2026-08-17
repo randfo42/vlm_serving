@@ -32,7 +32,8 @@
 
 ```
 app/
-  run_walk.py              # CLI 진입점
+  run_walk.py              # CLI 진입점 — 한 길을 따라간다
+  run_explore.py           # CLI 진입점 — 갈래를 전부 간다 (§3.5)
   requirements.txt
   .env                     # 비밀값. gitignore + 훅으로 읽기 차단 (§9)
   .env.example             # 형식만. 커밋됨
@@ -44,7 +45,8 @@ app/
     imaging.py             # ★ 서버로 나가는 모든 바이트가 지나는 단일 출구
     vlm.py                 # 1턴 호출 + 조용한 실패 감지 + 서킷브레이커
     geo.py                 # 측지 계산 (좌표를 직접 미는 데 필요)
-    walk.py                # 탐색 루프
+    walk.py                # 탐색 루프 — 경로 추적
+    explore.py             # 탐색 루프 — 분기 탐색 (BFS)
     runlog.py              # JSONL
     providers/
       base.py              # Pano + RoadviewProvider 프로토콜
@@ -123,6 +125,33 @@ s16~s18 의 진짜 갈림길뿐이었다. 늘어나야 할 곳에서만 늘어�
 
 > `no_coverage` 와 `dead_end` 를 섞으면 안 된다. 앞은 지도 사업자가 안 찍은 것이고
 > 뒤는 모델의 판정이다. 정확도를 볼 때 둘을 한 통에 넣으면 모델이 억울해진다.
+
+---
+
+## 3.5 분기 탐색 — explore (2026-08-18)
+
+walk 가 "한 길을 따라간다" 라면 `explore.py` 는 "이 지점에서 뻗는 산책로를
+전부 마킹한다" 다. walk 가 frontier 에 기록만 하던 갈래를 큐에 넣어 너비 우선으로
+소비한다. 웹 UI 의 "위치를 넣으면 주변 산책로가 그려진다" 가 이 루프 위에 선다.
+
+한 판정의 모양(capture → imaging → vlm.assess)과 후보 생성(`walk._candidates`)은
+walk 와 **같은 코드**다. 두 루프의 판정 조건이 갈라지면 결과를 비교할 수 없다.
+
+walk 와 다른 결정들:
+
+| | walk | explore | 이유 |
+|---|---|---|---|
+| 갈림길 | 정면 하나, 나머지 기록 | **전부 큐에** | 목적이 경로가 아니라 지도다 |
+| 시작 방향 | `--bearing` 필수 | 모든 방향 | 시작점에는 "온 길" 이 없다 |
+| U턴 방지 | `max_turn_deg=120` | 없음 (180) | 온 길은 visited 로 정확히 빠진다 |
+| 실질 예산 | `max_steps` | **`max_vlm_calls`** | 갈림길 수에 따라 같은 depth 라도 비용이 다르다 |
+| miss 허용 | 2회 밀어봄 | 없음 | 갈래마다 밀면 오판 하나가 가짜 가지를 만든다 |
+| `no_coverage` | 탐색 종료 | 그 갈래만 접음 | 다른 갈래가 남아 있다 |
+| 재방문 | tolerance 로 감지 | 원천 차단 (visited set) | pano 하나에 판정 하나 |
+
+예산(depth·호출·시간)에 걸려 못 간 갈래는 버리지 않고 `frontier` 에 남긴다 —
+같은 자리에서 이어 탐색할 때 그게 그대로 입력이다. 설정은 전부
+`ExploreConfig` 에 있고 필드마다 주석으로 무엇을 하는지 적혀 있다.
 
 ---
 
