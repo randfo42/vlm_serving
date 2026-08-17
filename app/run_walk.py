@@ -44,6 +44,10 @@ def main() -> int:
                     help="첫 성공에서 멈춘다. 갈림길을 놓치는 대신 호출이 준다")
     ap.add_argument("--schema", default="walk", choices=sorted(P.SCHEMAS),
                     help="walk=is_trail 만(빠름) / eval=+confidence(ROC 용)")
+    ap.add_argument("--prompt", default=P.DEFAULT_VERSION, choices=sorted(P.PINS),
+                    help="판정 기준. v2=카메라가 산책로 위에 서 있는가(기본) / "
+                         "v1=프레임에 산책로가 보이는가. 서로 다른 질문이라 "
+                         "두 버전의 런은 직접 비교하지 말 것")
     ap.add_argument("--url", default=DEFAULT_URL)
     ap.add_argument("--headed", action="store_true",
                     help="kakao: 브라우저를 띄운다. 검은 화면이 찍힐 때 첫 확인 수단")
@@ -59,7 +63,7 @@ def main() -> int:
 
     cfg = WalkConfig(step_m=a.step_m, max_steps=a.steps,
                      probe_all=a.probe_all, max_candidates=a.candidates)
-    client = VlmClient(url=a.url, schema_name=a.schema)
+    client = VlmClient(url=a.url, schema_name=a.schema, system_version=a.prompt)
     try:
         prov = providers.make(a.provider, headless=not a.headed)
     except (providers.ProviderError, RuntimeError) as e:
@@ -73,10 +77,10 @@ def main() -> int:
     header = {"provider": prov.name, "schema": a.schema, "url": a.url,
               "start": [lat, lng], "start_bearing": a.bearing,
               "config": vars(cfg) | {"side_offsets": list(cfg.side_offsets)},
-              "prompt": P.fingerprint()}
+              "prompt": P.fingerprint(a.prompt)}
 
-    print(f"provider={prov.name}  schema={a.schema}  start=({lat},{lng}) "
-          f"bearing={a.bearing}\n로그: {out}\n")
+    print(f"provider={prov.name}  prompt={a.prompt}  schema={a.schema}  "
+          f"start=({lat},{lng}) bearing={a.bearing}\n로그: {out}\n")
     res = None
     try:
         with RunLog(out, header) as log:

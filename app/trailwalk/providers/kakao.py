@@ -31,6 +31,7 @@ Kakao 앱키는 **도메인 등록제**다. `file://` 로 열면 SDK 가 거부�
 """
 import json
 import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -43,9 +44,13 @@ VIEW_W, VIEW_H = 1280, 720   # 16:9 — imaging.TARGET_SIZE 와 맞춰 리사이
 # 우리는 **추가 요청을 보내지 않고 응답만 가로챈다** (→ neighbors()).
 NODE_API_MARK = "roadview-search/v2/node/"
 
-# 프레임 안정화. 연속 두 스크린샷이 같아질 때까지 기다린다 (→ capture()).
-RENDER_SETTLE_MS = 150
-RENDER_SETTLE_TRIES = 6
+# 프레임 안정화 (→ capture()). 조건이 둘이다: 타일 요청이 끊기고, 그다음
+# 연속 N 프레임이 동일할 것. 하나만으로는 반쯤 로드된 그림이 통과한다.
+TILE_QUIET_MS = 250          # 타일 요청이 이만큼 없으면 로딩이 끝난 것으로 본다
+TILE_WAIT_MAX_MS = 5000      # 그래도 안 끊기면 포기하고 프레임 비교로 넘어간다
+RENDER_SETTLE_MS = 120
+RENDER_SETTLE_STABLE = 3     # 연속 몇 프레임이 같아야 안정으로 볼지
+RENDER_SETTLE_TRIES = 12
 
 SDK_URL = "https://dapi.kakao.com/v2/maps/sdk.js?appkey={key}&autoload=false"
 
@@ -252,7 +257,13 @@ class KakaoProvider:
         # 이웃 목록이 들어 있다 — 우리가 따로 요청하지 않고 지나가는 것을 줍는다.
         self._spots: dict[str, list[Neighbor]] = {}
         self._unsettled = 0        # 프레임이 끝내 안 멎은 캡처 수 (→ capture())
+        self._warmed = False       # 세션 첫 캡처를 버렸는가 (→ capture())
+        self._inflight = 0         # 아직 안 끝난 타일 요청 수 (→ _await_tiles)
+        self._last_net = 0.0       # 마지막 타일 요청이 끝난 시각
         self._page.on("response", self._sniff_node)
+        self._page.on("request", self._net_start)
+        self._page.on("requestfinished", self._net_end)
+        self._page.on("requestfailed", self._net_end)
         self._page.goto(self._origin + "/", wait_until="load")
         try:
             self._page.wait_for_function("window.__ready && window.__ready()", timeout=20_000)
@@ -262,6 +273,28 @@ class KakaoProvider:
             reason = diagnose_sdk(appkey, self._origin)
             self.close()
             raise ProviderError(f"Kakao SDK 가 로드되지 않았다.\n  {reason}") from None
+
+    # ── 타일 로딩 추적 ──────────────────────────────────────────────────
+    # 파노라마는 타일 여러 장으로 그려지고, 저해상도 → 고해상도로 덮어쓴다.
+    # 화면이 "안 변한다" 는 것만으로는 다 붙었다고 할 수 없다 — 중간 단계에서
+    # 잠깐 멎었다가 다음 타일이 도착해 다시 바뀐다. 요청이 끊긴 것을 봐야 한다.
+    def _net_start(self, request) -> None:
+        if request.resource_type == "image":
+            self._inflight += 1
+
+    def _net_end(self, request) -> None:
+        if request.resource_type == "image":
+            self._inflight = max(0, self._inflight - 1)
+            self._last_net = time.monotonic()
+
+    def _await_tiles(self) -> None:
+        """진행 중인 타일 요청이 없고, 그 상태가 잠시 유지될 때까지 기다린다."""
+        deadline = time.monotonic() + TILE_WAIT_MAX_MS / 1000
+        while time.monotonic() < deadline:
+            quiet = time.monotonic() - self._last_net
+            if self._inflight == 0 and quiet >= TILE_QUIET_MS / 1000:
+                return
+            self._page.wait_for_timeout(50)   # 이벤트 루프를 돌려 콜백을 받는다
 
     # ── 이웃 (인접 pano) ────────────────────────────────────────────────
     def _sniff_node(self, response) -> None:
@@ -345,15 +378,36 @@ class KakaoProvider:
         # 나왔고, 그 반쯤 로드된 그림이 **반대 판정**을 받아 탐색이 다른 길로
         # 새어버렸다. (모델 자체는 결정적이다: 같은 바이트 → 같은 답.)
         #
+        # 조건이 둘인 이유: "연속 두 프레임이 같다" 만으로는 부족했다. 타일이
+        # 저해상도 → 고해상도로 덮어쓰는 중간에 잠깐 멎는 구간이 있어서, 거기서
+        # 두 프레임이 일치해버린다. 같은 pano 를 5번 찍었더니 PNG 가 4가지로
+        # 나왔고 그중 1회는 판정까지 뒤집혔다 — 전부 '안정' 판정을 통과한 채로.
+        # 그래서 **타일 요청이 끊긴 것**(_await_tiles)을 먼저 보고, 그다음에
+        # 연속 3프레임 일치를 본다.
+        #
         # 스크린샷은 로컬이라 싸고, VLM 호출이 2.2초로 비싸다. 몇백 ms 를 더
         # 써서 판정 하나를 지키는 쪽이 압도적으로 남는 장사다.
+        # 세션의 첫 캡처는 버린다. 브라우저·SwiftShader·HTTP 캐시가 전부 찬 상태라
+        # 같은 pano 를 6번 찍었을 때 **1회차만** 다른 PNG 가 나왔다(3.0s vs 1.15s,
+        # 2~6회차는 완전 동일). 안정 조건은 통과하는데 결과가 다르다 — 즉 "멎었다"
+        # 를 잘못 판단한 게 아니라 첫 렌더 자체가 다르다. 버리는 캡처 한 번(~1.2s)
+        # 으로 런 전체의 재현성을 산다.
+        if not self._warmed:
+            self._warmed = True
+            self._settle()
+        return self._settle()
+
+    def _settle(self) -> bytes:
+        self._await_tiles()
         prev = self._page.locator("#rv").screenshot(type="png")
+        same = 1
         for _ in range(RENDER_SETTLE_TRIES):
             self._page.wait_for_timeout(RENDER_SETTLE_MS)
             cur = self._page.locator("#rv").screenshot(type="png")
-            if cur == prev:
-                return cur
+            same = same + 1 if cur == prev else 1
             prev = cur
+            if same >= RENDER_SETTLE_STABLE:
+                return cur
         # 끝내 안 멎었다. 마지막 프레임을 쓰되 조용히 넘기지는 않는다 —
         # 이 로그가 잦으면 대기 상수를 올려야 한다는 신호다.
         self._unsettled += 1

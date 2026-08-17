@@ -63,10 +63,15 @@ class Stats:
 
 
 class VlmClient:
-    def __init__(self, url: str = DEFAULT_URL, schema_name: str = "walk"):
+    def __init__(self, url: str = DEFAULT_URL, schema_name: str = "walk",
+                 system_version: str = P.DEFAULT_VERSION):
         self.url = url
         self.schema_name = schema_name
         self.schema = P.SCHEMAS[schema_name]
+        # 클라이언트 수명 내내 같은 문자열을 재사용한다. 요청마다 다시 읽으면
+        # 1바이트만 달라져도 프리픽스 캐시가 죽는데 에러는 안 난다.
+        self.system_version = system_version
+        self.system = P.load(system_version)
         self.stats = Stats()
         self._streak_500 = 0
 
@@ -83,7 +88,7 @@ class VlmClient:
     def _call_once(self, data_uri: str, text: str) -> tuple[dict, float]:
         body = {
             "messages": [
-                {"role": "system", "content": P.SYSTEM},          # 바이트 고정 (§3.1)
+                {"role": "system", "content": self.system},       # 바이트 고정 (§3.1)
                 {"role": "user", "content": [
                     {"type": "image_url", "image_url": {"url": data_uri}},  # 이미지가 먼저
                     {"type": "text", "text": text},                          # 가변값은 뒤
