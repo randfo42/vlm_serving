@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -40,9 +41,36 @@ from pathlib import Path
 # 시도하면 또 리뷰가 돌 수 있다. 부모가 표식을 심고 자식은 그걸 보고 비켜난다.
 GUARD = "TRAILWALK_IN_REVIEW"
 
-GIT_COMMIT = re.compile(r"(?<![\w./-])git(?:\s+-\S+)*\s+commit(?![\w-])")
-MAX_DIFF_BYTES = 120_000        # 이보다 크면 리뷰어에게 통째로 주지 않는다
-AGENT_TIMEOUT_S = 240
+# `git commit` 찾기. git 과 commit 사이에는 전역 옵션이 낀다.
+#
+# 처음엔 `git(?:\s+-\S+)*\s+commit` 이었는데 **`git -C /path commit` 을 놓쳤다.**
+# `-C` 는 값을 따로 받는 옵션이라 `/path` 가 `-` 로 시작하지 않기 때문이다.
+# 놓치면 리뷰가 조용히 안 돈다 — 이 훅에서 가장 나쁜 실패 방식이다.
+#
+# `git .* commit` 처럼 헐겁게 잡지는 않는다. `git log --grep=commit` 같은 것까지
+# 걸려서 엉뚱한 명령마다 테스트가 돌게 된다. 값을 받는 전역 옵션만 나열한다.
+# 구분자 사이에는 역슬래시 줄바꿈이 낄 수 있다: `git -C /repo \<개행> commit`.
+# `\s` 는 역슬래시를 안 먹으므로 따로 넣어준다.
+_SP = r"[\s\\]+"
+GIT_COMMIT = re.compile(
+    r"(?<![\w./-])git"
+    rf"(?:{_SP}(?:-[cC]{_SP}\S+"
+    rf"|--(?:git-dir|work-tree|namespace|exec-path|config-env)(?:=\S+|{_SP}\S+)"
+    r"|-\S+))*"
+    rf"{_SP}commit(?![\w-])")
+
+# 셸 명령 구분자. 이 뒤는 **다른 명령**이라 앞 명령의 플래그 판정에 섞이면 안 된다.
+SEPARATORS = (";", "&&", "||", "|", "&")
+# 실측(2026-08-17): 10KB diff → 230~290초. 도구를 전부 빼도 230초라 병목은 탐색이
+# 아니라 생성이다. 그래서 40KB 를 넘으면 리뷰를 건너뛴다 — 95KB 를 넣었더니 240초를
+# 통째로 태우고 결국 아무 결과도 못 냈다. 못 할 일이면 빨리 포기하는 편이 낫다.
+MAX_DIFF_BYTES = 40_000
+AGENT_TIMEOUT_S = 480
+
+# `git commit` 의 짧은 플래그 중 **값을 받지 않는** 것들. 묶음 플래그를 해석할 때
+# 쓴다 (→ _has_short). 값을 받는 것(-m -F -c -C -t -u)이 앞에 오면 그 뒤는
+# 플래그가 아니라 값이다.
+NO_ARG_SHORT = set("aeinopqsvz")
 
 PROMPT = """\
 아래는 이 저장소에서 커밋되기 직전의 스테이지된 diff 다. 코드 리뷰를 해라.
@@ -82,6 +110,115 @@ severity 는 실제로 깨지는 것만 blocking 이다. 확신이 없으면 adv
 """
 
 
+def commit_flags(cmd: str) -> list[str]:
+    """`git commit ...` 이 있는 **그 줄**의 토큰들.
+
+    heredoc 본문은 다음 줄부터라 자연히 빠진다. 이 훅의 모든 플래그 판정이
+    지나는 단일 출구다 — 여러 곳에서 각자 문자열을 훑으면 각자 다르게 틀린다.
+
+    ⚠️ 역슬래시 줄바꿈은 따라간다. 그냥 첫 줄만 자르면 이렇게 쓴 플래그를 놓친다:
+
+        git commit -m "메시지" \\
+            --no-verify
+
+    놓치면 `-a` 를 못 봐서 diff 를 빈 것으로 오판하고 검사가 통째로 스킵된다.
+    (리뷰 에이전트가 이 회귀를 잡았다 — 첫 줄만 보게 바꾸면서 새로 생긴 것이다.)
+    """
+    m = GIT_COMMIT.search(cmd)
+    if not m:
+        return []
+    parts: list[str] = []
+    for raw in cmd[m.start():].split("\n"):
+        # rstrip 하고 판단하면 안 된다. bash 는 역슬래시가 **개행 바로 앞**에 있을
+        # 때만 줄을 잇는다. `\` 뒤에 공백이 있으면 그건 이어지는 줄이 아니라
+        # 이스케이프된 공백이고, 그런데도 다음 줄을 끌어오면 실제로는 전달되지
+        # 않은 플래그를 읽게 된다 — 그 방향의 실패가 '조용한 스킵' 이다.
+        cont = raw.endswith("\\")
+        parts.append(raw[:-1] if cont else raw)
+        if not cont:
+            break                       # 이어지지 않는다 — heredoc 본문은 여기서 끊긴다
+    line = _cut_at_separator(" ".join(parts))
+    try:
+        return shlex.split(line, comments=False)
+    except ValueError:
+        return line.split()             # 따옴표가 안 닫힌 줄 — 대충이라도 본다
+
+
+def _cut_at_separator(line: str) -> str:
+    """뒤에 붙은 다른 명령을 잘라낸다.
+
+    안 자르면 **뒤 명령의 플래그가 앞 명령 판정에 섞인다** — 실패 시 재시도하는
+    흔한 패턴에서 바로 터진다:
+
+        git commit -m x || git commit --no-verify -m x
+                           ^^^^^^^^^^^^ 이게 앞 커밋까지 스킵시킨다
+
+    토큰으로 나눈 뒤 자르면 안 된다. **공백 없이 붙은 `x||git` 을 shlex 가 한
+    토큰으로 합쳐버려** 구분자를 못 찾는다 (리뷰 에이전트가 잡았다). 그래서
+    문자열 단계에서 따옴표 상태를 보며 직접 훑는다 — 따옴표 안의 `||` 는
+    구분자가 아니다.
+    """
+    quote = ""
+    i = 0
+    while i < len(line):
+        c = line[i]
+        if quote:
+            if c == quote:
+                quote = ""
+            elif c == "\\" and quote == '"':
+                i += 1                  # 큰따옴표 안의 이스케이프
+        elif c in "'\"":
+            quote = c
+        elif c == "\\":
+            i += 1                      # 따옴표 밖의 이스케이프
+        else:
+            for sep in SEPARATORS:
+                if line.startswith(sep, i):
+                    return line[:i]
+        i += 1
+    return line
+
+
+def _has_short(tokens: list[str], letter: str) -> bool:
+    """묶인 짧은 플래그에서 letter 를 찾는다 (`-am` 의 a).
+
+    ⚠️ 단순히 `letter in token` 으로 보면 **`-uno` 가 `-n` 으로 오판된다.**
+    `-uno` 는 `--untracked-files=no` 의 축약이고 'n' 은 값의 일부다. 그러면
+    멀쩡한 커밋에서 리뷰가 통째로 건너뛰어진다 — 리뷰 에이전트가 이걸 잡았다.
+
+    그래서 letter **앞의 글자가 전부 값을 안 받는 플래그일 때만** 인정한다.
+    값을 받는 플래그가 앞에 있으면 그 뒤는 플래그가 아니라 값이기 때문이다.
+    """
+    for t in tokens:
+        if not re.fullmatch(r"-[a-zA-Z]+", t):
+            continue
+        body = t[1:]
+        i = body.find(letter)
+        if i >= 0 and all(c in NO_ARG_SHORT for c in body[:i]):
+            return True
+    return False
+
+
+def skips_verify(cmd: str) -> bool:
+    """`--no-verify` 가 **플래그로** 주어졌는가.
+
+    ⚠️ 실전에서 뚫린 지점이다. 처음엔 `"--no-verify" in cmd` 로 봤는데,
+    커밋 메시지 본문에 그 문자열이 들어 있으면(이 훅을 설명하는 커밋이 딱
+    그랬다) 리뷰가 통째로 건너뛰어졌다. 명령이 heredoc 을 쓰면 메시지 본문이
+    command 문자열 안에 통째로 들어온다.
+
+    이 실수는 `block-secret-reads.py` 가 겪은 것과 같은 종류다 — 명령줄을
+    **파싱하지 않고 문자열로 훑으면** 언급과 실제 사용이 구분되지 않는다.
+    다만 방향이 반대라 더 위험하다: 저쪽은 과잉 차단이라 즉시 눈에 띄지만,
+    이쪽은 **조용히 통과**시킨다. 이 레포가 계속 당해온 그 유형이다.
+
+    그래서 `git commit` 이 있는 **그 줄만** 잘라서 토큰으로 본다.
+    heredoc 본문은 다음 줄부터이므로 자연히 빠진다.
+    """
+    tokens = commit_flags(cmd)
+    return "--no-verify" in tokens or _has_short(tokens, "n")
+
+
 def emit(decision: str | None = None, reason: str = "", context: str = "") -> None:
     """PreToolUse 훅 응답. decision 이 None 이면 조용히 통과."""
     out: dict = {}
@@ -108,15 +245,20 @@ def run(cmd: list[str], cwd: Path, timeout: int = 120, env: dict | None = None):
 
 
 def staged_diff(root: Path, cmd: str) -> str:
-    """무엇이 커밋되려는가.
+    r"""무엇이 커밋되려는가.
 
-    `git commit -a` 는 커밋 시점에 스테이징하므로 --cached 가 비어 있다.
-    그 경우 추적 중인 파일의 워킹트리 변경까지 본다.
+    `git commit -a` 는 커밋 시점에 추적 중인 파일을 스테이징하므로, --cached 만
+    보면 실제로 커밋될 것보다 좁다. 그래서 -a/--all 이면 `git diff HEAD` 를 본다.
+
+    ⚠️ 처음엔 **--cached 가 비었을 때만** 폴백했고, -a 감지도 `\s-\w*a` 정규식이라
+    `--all` 을 못 잡았다. 둘이 겹치면 리뷰가 통째로 건너뛰어진다: --cached 가
+    비어 있는데 --all 이 안 잡히면 diff 가 빈 문자열이 되고, 그러면 main() 이
+    "커밋할 게 없다" 로 오인해 조용히 통과시킨다. 리뷰 에이전트가 이걸 잡았다.
     """
-    d = run(["git", "diff", "--cached"], root).stdout
-    if not d.strip() and re.search(r"\s-\w*a", cmd):
-        d = run(["git", "diff", "HEAD"], root).stdout
-    return d
+    tokens = commit_flags(cmd)
+    if "--all" in tokens or _has_short(tokens, "a"):
+        return run(["git", "diff", "HEAD"], root).stdout
+    return run(["git", "diff", "--cached"], root).stdout
 
 
 def gate_lint_and_tests(root: Path, py: str) -> str | None:
@@ -129,8 +271,16 @@ def gate_lint_and_tests(root: Path, py: str) -> str | None:
                        ("pytest", [py, "-m", "pytest", "-q"])):
         try:
             r = run(cmd, root)
-        except (OSError, subprocess.TimeoutExpired) as e:
-            return None if isinstance(e, OSError) else f"{label} 이(가) 시간 안에 안 끝났다"
+        except OSError:
+            continue                        # 인터프리터 자체가 없다
+        except subprocess.TimeoutExpired:
+            return f"{label} 이(가) 시간 안에 안 끝났다"
+        # ⚠️ `python -m ruff` 는 ruff 가 없어도 OSError 를 던지지 않는다. 인터프리터
+        # 실행은 성공하고 "No module named ruff" 와 함께 종료코드만 비정상이 된다.
+        # 이걸 실패로 세면 도구를 안 깐 새 체크아웃에서 아무도 커밋을 못 한다 —
+        # 바로 위 docstring 이 약속한 것과 정반대다. 리뷰 에이전트가 잡았다.
+        if f"No module named {label}" in r.stderr:
+            continue
         if r.returncode == 5 and label == "pytest":
             continue                        # 수집된 테스트 없음 — 실패가 아니다
         if r.returncode != 0:
@@ -157,15 +307,34 @@ def review(root: Path, diff: str) -> tuple[list[dict], str | None]:
     if r.returncode != 0:
         return [], f"리뷰 에이전트 실패 (exit {r.returncode})"
 
-    # 마지막 JSON 객체를 찾는다. 에이전트가 앞에 설명을 붙여도 견딘다.
-    for m in reversed(list(re.finditer(r"\{[^{}]*\"findings\"\s*:.*\}", r.stdout, re.S))):
+    return parse_findings(r.stdout)
+
+
+def parse_findings(text: str) -> tuple[list[dict], str | None]:
+    """에이전트 출력에서 findings 를 뽑는다.
+
+    ⚠️ 처음엔 `\\{...findings.*\\}` 를 DOTALL 로 썼는데 **greedy 라 뒤쪽 `}` 까지
+    통째로 삼켰다.** 에이전트가 JSON 뒤에 중괄호 섞인 설명을 붙이면 파싱이
+    실패하고, 이 경로는 fail-open 이라 **blocking 지적이 있어도 조용히 통과**한다.
+    리뷰는 돌았는데 결과만 버려지는 셈이라 가장 나쁜 실패다. 리뷰 에이전트가 잡았다.
+
+    그래서 정규식으로 끝을 추측하지 않고 `raw_decode` 로 **JSON 이 실제로 끝나는
+    지점까지만** 읽는다. 뒤에 무엇이 붙어 있든 무관해진다.
+    """
+    dec = json.JSONDecoder()
+    found = None
+    for i, ch in enumerate(text):
+        if ch != "{":
+            continue
         try:
-            got = json.loads(m.group(0))
+            obj, _ = dec.raw_decode(text, i)
         except json.JSONDecodeError:
             continue
-        if isinstance(got.get("findings"), list):
-            return got["findings"], None
-    return [], "리뷰 결과를 해석하지 못했다"
+        if isinstance(obj, dict) and isinstance(obj.get("findings"), list):
+            found = obj["findings"]         # 여러 개면 마지막 것
+    if found is None:
+        return [], "리뷰 결과를 해석하지 못했다"
+    return found, None
 
 
 def fmt(findings: list[dict]) -> str:
@@ -193,7 +362,7 @@ def main() -> None:
         emit()
     if os.environ.get(GUARD):
         emit()                              # 리뷰 에이전트 자신의 커밋 — 재귀 차단
-    if "--no-verify" in cmd or "-n " in f" {cmd} ":
+    if skips_verify(cmd):
         emit(context="리뷰 훅을 --no-verify 로 건너뛰었다.")
 
     root = Path(os.environ.get("CLAUDE_PROJECT_DIR", ".")).resolve()
