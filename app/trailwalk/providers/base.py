@@ -28,6 +28,24 @@ class Pano:
     captured_at: str | None = None
 
 
+@dataclass(frozen=True)
+class Neighbor:
+    """이 pano 에서 **한 발 갈 수 있는** 이웃.
+
+    로드뷰 화면에 흰 화살표로 그려지는 바로 그것이다. 처음엔 이 정보를 얻을
+    길이 없다고 보고 좌표를 직접 미는 방식으로 설계했는데(→ 21-…-providers.md
+    §1.3), 화면에 그려지는 이상 어딘가에는 데이터가 있었다.
+
+    heading 은 **정확한 방위각**이다. 화면 화살표의 8방위 라벨(북/북서/…)은
+    표시용으로 버킷된 값이고, 실제 값은 91.36° 같은 소수다.
+    """
+    pano_id: str
+    heading: float          # 이 pano 에서 이웃을 향하는 방위각 (0=북)
+    lat: float
+    lng: float
+    name: str | None = None  # 도로/길 이름. 같은 길인지 갈라졌는지 보는 데 쓸모 있다
+
+
 class ProviderError(RuntimeError):
     pass
 
@@ -42,6 +60,15 @@ class RoadviewProvider(Protocol):
 
     def capture(self, pano: Pano, heading: float, fov_deg: float) -> bytes:
         """pano 를 heading 방향에서 본 한 화각. 인코딩된 이미지 바이트."""
+        ...
+
+    def neighbors(self, pano: Pano) -> list[Neighbor]:
+        """이 pano 에서 한 발 갈 수 있는 이웃들. 모르면 빈 리스트.
+
+        **선택 구현이다.** 빈 리스트를 돌려주면 walk.py 가 좌표를 직접 미는
+        예전 방식으로 되돌아간다. 이웃을 주는 provider 에서는 그래프를 따라가고,
+        못 주는 provider 에서도 탐색이 계속 돌아야 하기 때문이다.
+        """
         ...
 
     def close(self) -> None:

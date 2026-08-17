@@ -36,6 +36,8 @@ def main() -> int:
     ap.add_argument("--bearing", type=float, default=0.0, help="출발 방위각 (0=북)")
     ap.add_argument("--steps", type=int, default=WalkConfig.max_steps)
     ap.add_argument("--step-m", type=float, default=WalkConfig.step_m)
+    ap.add_argument("--candidates", type=int, default=WalkConfig.max_candidates,
+                    help="한 스텝에서 최대 몇 방향까지 물어볼지 (기본 3)")
     ap.add_argument("--probe-sides-every", type=int, default=0,
                     help="N 스텝마다 갈림길 확인. 0=끄기 (기본). 호출이 3배로 는다")
     ap.add_argument("--schema", default="walk", choices=sorted(P.SCHEMAS),
@@ -54,7 +56,8 @@ def main() -> int:
         APP / "runs" / f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{a.provider}.jsonl")
 
     cfg = WalkConfig(step_m=a.step_m, max_steps=a.steps,
-                     probe_sides_every=a.probe_sides_every)
+                     probe_sides_every=a.probe_sides_every,
+                     max_candidates=a.candidates)
     client = VlmClient(url=a.url, schema_name=a.schema)
     try:
         prov = providers.make(a.provider, headless=not a.headed)
@@ -98,7 +101,8 @@ def main() -> int:
         prov.close()
 
     s = client.stats
-    print(f"멈춘 이유: {res.stop_reason}")
+    print(f"멈춘 이유: {res.stop_reason}"
+          + ("  (이웃 그래프 사용)" if res.used_graph else "  (좌표 밀기 폴백)"))
     print(f"스텝 {res.steps} · VLM 호출 {s.calls} · {res.wall_s:.0f}s"
           + (f" ({s.total_ms / s.calls / 1000:.2f}s/호출)" if s.calls else ""))
     # 조용히 깨지는 신호는 요약에 반드시 띄운다. 로그를 안 열어봐도 보이게.

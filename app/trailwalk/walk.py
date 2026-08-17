@@ -6,47 +6,56 @@ VLM 에게 묻는 것은 오직 **"이 장면이 산책로인가"** 하나다. �
 
 ### 한 스텝의 모양
 
-    현재 좌표 → provider.nearest 로 pano 스냅
-             → 진행 방향 화각 1장 캡처 → VLM 1턴
-             → 산책로면 그대로 전진, 아니면 좌우를 재본다
-             → 고른 방향으로 STEP_M 전진한 좌표를 다음 스텝의 입력으로
+    현재 pano
+      → 이웃 목록 (화면의 흰 화살표와 같은 것). 온 길과 이미 밟은 곳은 뺀다
+      → 진행 방향에 가까운 순으로 정렬 — 맨 앞이 "정면"
+      → 정면부터 한 장씩 캡처해 VLM 에 묻는다
+      → 산책로라고 답한 첫 후보로 **그 pano 로 바로 이동**
 
-### 왜 "직진 먼저, 실패하면 좌우" 인가
+### 왜 이웃 그래프인가
 
-호출 하나가 2.1초다. 스텝마다 3방향을 다 물으면 6.3초/스텝이고, 100스텝이면
-10분이 넘는다. 그런데 산책로 위에서는 직진이 거의 항상 답이다. 직진이 통하는
-동안은 1호출/스텝(2.1초)으로 가고, 막혔을 때만 좌우를 여는 게 같은 시간에
-훨씬 멀리 간다.
+처음엔 이웃 목록을 얻을 방법이 없다고 보고 좌표를 직접 미는 방식으로 짰다
+(heading 방향 12m 전진 → 가장 가까운 pano 로 스냅). 그런데 로드뷰 화면에 그려지는
+흰 화살표가 바로 그 정보였고, 데이터로 꺼낼 수 있었다
+(→ `providers/kakao.py` `neighbors()`, `docs/21-roadview-providers.md` §1.3).
 
-대가는 **갈림길을 지나친다**는 것이다. 분기를 놓치면 안 되는 실험에서는
-`probe_sides_every=N` 으로 N 스텝마다 강제로 좌우를 열 수 있다.
+그래프가 좌표 밀기보다 나은 점:
 
-### 왜 이웃 pano 그래프를 안 쓰는가
+- **보폭을 정할 필요가 없다.** 촬영 간격이 곧 보폭이다. 12m 로 밀다가 촬영
+  간격이 5m 인 구간에서 pano 를 건너뛰거나, 20m 인 구간에서 제자리를 밟는 일이 없다
+- **방위가 정확하다.** 이웃마다 실제 방위각(91.36° 같은)이 딸려 온다.
+  "정면" 이 추정이 아니라 정의가 된다
+- **온 길을 정확히 뺄 수 있다.** 각도로 어림하지 않고 pano_id 로 지운다
+- **막다른 길이 명확하다.** 이웃이 없으면 없는 것이다. "스냅이 실패했나
+  길이 끝났나" 를 구분할 필요가 없다
 
-없어서다. Kakao/Naver 는 이웃 파노라마 목록 API 를 공개하지 않는다
-(docs/21-roadview-providers.md §4). 대신 좌표를 직접 밀고 스냅시킨다. 그래프가
-없어도 걸을 수 있고, 오히려 provider 를 갈아끼우기 쉬워진다.
+이웃을 못 주는 provider(fixture 등)에서는 **자동으로 좌표 밀기로 되돌아간다.**
+두 방식이 같은 판정 루프를 공유하도록 후보 목록 형태로 통일했다.
 """
 import time
 from dataclasses import dataclass, field
 
 from . import geo
 from .imaging import view_to_data_uri
-from .providers.base import Pano
+from .providers.base import Neighbor, Pano
 from .vlm import ImageIgnoredError, ServerDeadError, VlmError
 
 
 @dataclass
 class WalkConfig:
-    step_m: float = 12.0          # 한 스텝 전진 거리. Kakao 도로 촬영 간격이 ~10m
-    snap_radius_m: float = 25.0   # 이보다 멀면 커버리지가 없는 것으로 본다
     fov_deg: float = 90.0
-    side_offsets: tuple[float, ...] = (-60.0, 60.0)   # 직진이 막혔을 때 재볼 각도
-    probe_sides_every: int = 0    # >0 이면 N 스텝마다 갈림길 확인 (0=끄기)
+    max_candidates: int = 3       # 한 스텝에서 최대 몇 방향까지 물어볼지
+    max_turn_deg: float = 120.0   # 이보다 크게 꺾이는 이웃은 후보에서 뺀다 (U턴 방지)
+    probe_sides_every: int = 0    # >0 이면 N 스텝마다 후보를 전부 물어 갈림길을 기록
     max_steps: int = 120
     max_seconds: float = 900.0
     miss_tolerance: int = 2       # 어느 방향도 산책로가 아닌 스텝을 몇 번 참을지
-    revisit_tolerance: int = 3    # 같은 pano 를 다시 밟는 것을 몇 번 참을지
+    revisit_tolerance: int = 3
+
+    # ── 이웃 그래프가 없는 provider 를 위한 폴백 ──
+    step_m: float = 12.0
+    snap_radius_m: float = 25.0
+    side_offsets: tuple[float, ...] = (-60.0, 60.0)
 
 
 @dataclass
@@ -56,6 +65,37 @@ class WalkResult:
     steps: int = 0
     calls: int = 0
     wall_s: float = 0.0
+    used_graph: bool = False
+
+
+def _candidates(provider, pano: Pano, bearing: float, came_from: str | None,
+                visited: dict, cfg: WalkConfig) -> tuple[list[tuple[float, Neighbor | None]], bool]:
+    """갈 만한 방향들을 **진행 방향에 가까운 순으로**. (후보, 그래프였나).
+
+    맨 앞이 "정면" 이다. 이웃 그래프가 있으면 정면이 실측 방위각이고,
+    없으면 그냥 현재 진행 방위다.
+    """
+    try:
+        nbrs = provider.neighbors(pano)
+    except Exception:
+        nbrs = []
+
+    if nbrs:
+        # 온 길과 이미 밟은 곳을 뺀다. 이게 그래프를 쓰는 가장 큰 이유다 —
+        # 각도로 어림하지 않고 정확히 지운다.
+        fresh = [n for n in nbrs
+                 if n.pano_id != came_from and n.pano_id not in visited]
+        fresh.sort(key=lambda n: geo.angle_diff(n.heading, bearing))
+        turnable = [n for n in fresh if geo.angle_diff(n.heading, bearing) <= cfg.max_turn_deg]
+        picked = (turnable or fresh)[:cfg.max_candidates]
+        if picked:
+            return [(n.heading, n) for n in picked], True
+        # 이웃은 있는데 전부 온 길/기방문이면 막다른 길이다. 폴백으로 새지 않는다.
+        return [], True
+
+    # 그래프를 못 주는 provider — 예전 방식(좌표 밀기)으로 돈다
+    offs = (0.0, *cfg.side_offsets)[:cfg.max_candidates]
+    return [(geo.norm_deg(bearing + o), None) for o in offs], False
 
 
 def walk(provider, client, start: tuple[float, float], start_bearing: float,
@@ -63,24 +103,27 @@ def walk(provider, client, start: tuple[float, float], start_bearing: float,
     """start 에서 start_bearing 방향으로 출발해 산책로를 따라간다."""
     res = WalkResult()
     t0 = time.time()
-    pos, bearing = start, geo.norm_deg(start_bearing)
+    bearing = geo.norm_deg(start_bearing)
+    pos = start
+    pano: Pano | None = None
+    came_from: str | None = None
     visited: dict[str, int] = {}
     misses = revisits = 0
 
-    def probe(pano: Pano, hdg: float, step: int) -> bool | None:
+    def probe(p: Pano, hdg: float, step: int) -> bool | None:
         """한 방향을 물어본다. None 은 '판정 불가' (캡처 실패)."""
         try:
-            raw = provider.capture(pano, hdg, cfg.fov_deg)
+            raw = provider.capture(p, hdg, cfg.fov_deg)
         except Exception as e:
             if log:
-                log.event("capture_failed", step=step, pano_id=pano.pano_id,
+                log.event("capture_failed", step=step, pano_id=p.pano_id,
                           heading=round(hdg, 1), error=f"{type(e).__name__}: {e}")
             return None
         uri, src_format = view_to_data_uri(raw)
         v = client.assess(uri, heading=hdg)
         res.calls += 1
         if log:
-            log.probe(step=step, pano_id=pano.pano_id, lat=pano.lat, lng=pano.lng,
+            log.probe(step=step, pano_id=p.pano_id, lat=p.lat, lng=p.lng,
                       heading=hdg, verdict=v, src_format=src_format)
         return v.is_trail
 
@@ -90,23 +133,23 @@ def walk(provider, client, start: tuple[float, float], start_bearing: float,
         if time.time() - t0 > cfg.max_seconds:
             res.stop_reason = "time_budget"; break
 
-        try:
-            pano = provider.nearest(pos[0], pos[1], cfg.snap_radius_m)
-        except Exception as e:
-            # provider 가 스스로 이상을 알린 경우(위치 갱신 지연 등). 조용히
-            # 넘기면 엉뚱한 좌표에서 탐색이 계속되므로 여기서 멈춘다.
-            if log:
-                log.event("provider_error", step=res.steps,
-                          error=f"{type(e).__name__}: {str(e).splitlines()[0]}")
-            res.stop_reason = "provider_error"
-            break
+        # ── 현재 pano 확정 ────────────────────────────────────────────
+        # 그래프 이동이면 이미 정해져 있다. 최초 스텝이나 폴백 이동이면 스냅한다.
         if pano is None:
-            # 로드뷰가 없는 구간. 산책로가 끝난 것과 구분되지 않는다 —
-            # 판정 정확도를 볼 때 이 둘을 섞지 말 것.
-            res.stop_reason = "no_coverage"
-            if log:
-                log.event("no_coverage", step=res.steps, lat=pos[0], lng=pos[1])
-            break
+            try:
+                pano = provider.nearest(pos[0], pos[1], cfg.snap_radius_m)
+            except Exception as e:
+                if log:
+                    log.event("provider_error", step=res.steps,
+                              error=f"{type(e).__name__}: {str(e).splitlines()[0]}")
+                res.stop_reason = "provider_error"; break
+            if pano is None:
+                # 로드뷰가 없는 구간. 산책로가 끝난 것과 구분되지 않는다 —
+                # 판정 정확도를 볼 때 이 둘을 섞지 말 것.
+                res.stop_reason = "no_coverage"
+                if log:
+                    log.event("no_coverage", step=res.steps, lat=pos[0], lng=pos[1])
+                break
 
         seen = visited.get(pano.pano_id, 0)
         visited[pano.pano_id] = seen + 1
@@ -118,30 +161,23 @@ def walk(provider, client, start: tuple[float, float], start_bearing: float,
                 res.stop_reason = "revisit_loop"; break
 
         # ── 방향 결정 ──────────────────────────────────────────────────
-        # 직진을 먼저 본다. 통하면 좌우는 아예 묻지 않는다 (호출 1회).
-        force_sides = cfg.probe_sides_every and res.steps % cfg.probe_sides_every == 0
-        chosen: float | None = None
+        cands, graph = _candidates(provider, pano, bearing, came_from, visited, cfg)
+        res.used_graph = res.used_graph or graph
+        if not cands:
+            res.stop_reason = "dead_end"
+            if log:
+                log.event("no_candidates", step=res.steps, pano_id=pano.pano_id)
+            break
+
+        force_all = cfg.probe_sides_every and res.steps % cfg.probe_sides_every == 0
+        chosen: tuple[float, Neighbor | None] | None = None
+        oks: list[tuple[float, Neighbor | None]] = []
         try:
-            straight_ok = probe(pano, bearing, res.steps)
-            if straight_ok and not force_sides:
-                chosen = bearing
-            else:
-                branches: list[float] = []
-                for off in cfg.side_offsets:
-                    hdg = geo.norm_deg(bearing + off)
-                    if probe(pano, hdg, res.steps):
-                        branches.append(hdg)
-                        if not force_sides:
-                            break   # 직진이 막힌 상황이면 첫 성공을 바로 택한다
-                if branches and log:
-                    log.event("branch", step=res.steps, pano_id=pano.pano_id,
-                              headings=[round(h, 1) for h in branches])
-                # 갈림길이어도 직진이 살아 있으면 직진을 유지한다. 양쪽 다 산책로일 때
-                # 방향을 트는 것은 근거 없는 선택이고, 경로가 제자리를 맴돌게 만든다.
-                if straight_ok:
-                    chosen = bearing
-                elif branches:
-                    chosen = branches[0]
+            for hdg, nb in cands:
+                if probe(pano, hdg, res.steps):
+                    oks.append((hdg, nb))
+                    if not force_all:
+                        break       # 정면에 가까운 쪽부터 봤으니 첫 성공이 최선이다
         except ImageIgnoredError:
             res.stop_reason = "image_ignored"; raise
         except ServerDeadError:
@@ -151,21 +187,36 @@ def walk(provider, client, start: tuple[float, float], start_bearing: float,
                 log.event("vlm_error", step=res.steps, error=str(e)[:400])
             res.stop_reason = "vlm_error"; break
 
+        if len(oks) > 1 and log:
+            log.event("branch", step=res.steps, pano_id=pano.pano_id,
+                      headings=[round(h, 1) for h, _ in oks])
+        if oks:
+            chosen = oks[0]         # 가장 정면에 가까운 산책로
+
         res.path.append({"pano_id": pano.pano_id, "lat": pano.lat, "lng": pano.lng,
-                         "bearing": round(bearing, 1), "is_trail": chosen is not None})
+                         "bearing": round(bearing, 1), "is_trail": chosen is not None,
+                         "n_candidates": len(cands)})
 
         if chosen is None:
             misses += 1
             if misses > cfg.miss_tolerance:
                 res.stop_reason = "dead_end"; break
-            # 아직 참는다: 직진으로 한 칸 밀어보고 다시 판단한다. 나무 그늘이나
-            # 역광 한 장 때문에 멀쩡한 길을 포기하는 일이 실제로 일어난다.
-            chosen = bearing
+            # 아직 참는다: 가장 정면인 후보로 한 칸 밀어보고 다시 판단한다.
+            # 나무 그늘이나 역광 한 장 때문에 멀쩡한 길을 포기하는 일이 실제로 있다.
+            chosen = cands[0]
         else:
             misses = 0
 
-        pos = geo.destination((pano.lat, pano.lng), chosen, cfg.step_m)
-        bearing = chosen
+        # ── 이동 ───────────────────────────────────────────────────────
+        hdg, nb = chosen
+        bearing = hdg
+        came_from = pano.pano_id
+        if nb is not None:
+            # 그래프 이동. 좌표를 밀 필요도, 다시 스냅할 필요도 없다.
+            pano = Pano(pano_id=nb.pano_id, lat=nb.lat, lng=nb.lng)
+        else:
+            pos = geo.destination((pano.lat, pano.lng), hdg, cfg.step_m)
+            pano = None             # 다음 바퀴에서 스냅한다
         res.steps += 1
 
     res.wall_s = time.time() - t0

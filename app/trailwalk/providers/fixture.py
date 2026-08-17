@@ -51,6 +51,14 @@ class FixtureProvider:
         idx = int.from_bytes(hashlib.sha256(key).digest()[:4], "big") % len(self.images)
         return self.images[idx].read_bytes()
 
+    def neighbors(self, pano) -> list:
+        """빈 목록. fixture 에는 그래프가 없다.
+
+        walk.py 가 이걸 보고 좌표 밀기 방식으로 되돌아간다 — 그래프가 있는
+        경로와 없는 경로 **둘 다** 테스트되도록 일부러 비워 둔다.
+        """
+        return []
+
     def close(self) -> None:
         pass
 

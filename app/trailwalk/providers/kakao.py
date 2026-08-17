@@ -1,7 +1,7 @@
 """Kakao 로드뷰 provider — headless 브라우저로 JS SDK 를 몬다.
 
-⚠️ **미검증이다.** Kakao JS 앱키가 없어 아직 한 번도 돌려보지 못했다.
-   실행 전에 docs/23-open-questions.md §1 을 읽을 것.
+실주행 확인됨 (2026-08-17, 청계천 20스텝). 설정에서 걸리기 쉬운 것들은
+docs/23-open-questions.md §1 에 정리해뒀다.
 
 ### 왜 브라우저인가
 
@@ -22,7 +22,10 @@ Kakao 앱키는 **도메인 등록제**다. `file://` 로 열면 SDK 가 거부�
 
 - WebGL 은 완전 headless 에서 안 그려지는 경우가 있다. 검게 찍히면
   `headless=False` 로 두고 확인할 것. 이게 첫 번째 의심 대상이다.
-- 이웃 pano 목록 API 가 없다. 이동은 walk.py 가 좌표 계산으로 만든다.
+- 화면의 방향 화살표는 기본적으로 **남긴다**. 인접 pano 가 어느 쪽에 있는지를
+  말해주는 정보이고, 그건 API 로는 안 나온다. 지우려면 `hide_arrows=True`.
+- 이웃 pano 목록은 **공개 API 에 없지만** SDK 가 받아오는 JSON 에 들어 있다.
+  `neighbors()` 가 그 응답을 가로챈다 — 우리가 따로 요청하지는 않는다.
 - 이미지 저장은 Kakao 운영정책상 회색지대다. 연구용 로컬 실행 범위를 넘기기 전에
   docs/23-open-questions.md §2 를 볼 것.
 """
@@ -32,9 +35,13 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from .base import Pano, ProviderError
+from .base import Neighbor, Pano, ProviderError
 
 VIEW_W, VIEW_H = 1280, 720   # 16:9 — imaging.TARGET_SIZE 와 맞춰 리사이즈를 무해하게
+
+# SDK 가 pano 를 띄울 때 스스로 치는 내부 JSON 엔드포인트.
+# 우리는 **추가 요청을 보내지 않고 응답만 가로챈다** (→ neighbors()).
+NODE_API_MARK = "roadview-search/v2/node/"
 
 SDK_URL = "https://dapi.kakao.com/v2/maps/sdk.js?appkey={key}&autoload=false"
 
@@ -92,21 +99,23 @@ def diagnose_sdk(appkey: str, origin: str) -> str:
 _PAGE = """<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <style>html,body{margin:0;padding:0;background:#000}
-#rv{width:%dpx;height:%dpx}
-/* 로드뷰 오버레이 UI 를 화면에서 걷어낸다. 전부 캔버스가 아니라 별도 DOM
-   레이어라 CSS 로 지워진다.
+#rv{width:{{W}}px;height:{{H}}px}
+/* 로드뷰 오버레이는 전부 캔버스가 아니라 별도 DOM 레이어라 CSS 로 다룰 수 있다.
+   ID 접미사(_al_737 의 737)는 세션마다 바뀌므로 **접두사로** 잡아야 한다.
 
-   왜 지우는가: 흰 방향 화살표가 보행로 한가운데를 덮는다. 모델에게 "이 장면이
-   산책로인가" 를 묻는데 정작 길이 UI 에 가려지면 그건 모델 탓이 아니다.
-   줌 버튼과 워터마크도 매 프레임 같은 자리에 찍혀 순수한 노이즈다.
+   기본은 크롬(줌·나침반·미니맵·워터마크)만 지운다. 매 프레임 같은 자리에
+   찍히는 순수한 노이즈이기 때문이다.
 
-   ID 접미사(_al_737 의 737)는 세션마다 바뀌므로 **접두사로** 잡아야 한다. */
-#rv [id^="_al_"],              /* 인접 pano 방향 화살표 */
+   **방향 화살표(_al_)는 남긴다.** 처음엔 보행로를 가린다는 이유로 지웠는데,
+   저건 UI 노이즈가 아니라 "여기서 어디로 갈 수 있는가" 라는 정보다 —
+   우리가 문서에 "이웃 pano 목록 API 가 없다" 고 적어둔 바로 그 데이터가
+   화면에 그려져 있는 셈이다. 지우려면 hide_arrows=True. */
 #rv [id^="_box_util_"],        /* 줌 · 나침반 */
 #rv [id^="_mm_"],              /* 미니맵 */
 #rv [id^="_kakao_copyright_"],
-#rv [id^="_extra_copyright_"] { display: none !important; }</style>
-<script src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=%s&autoload=false"></script>
+#rv [id^="_extra_copyright_"] { display: none !important; }
+{{ARROW_CSS}}</style>
+<script src="https://dapi.kakao.com/v2/maps/sdk.js?appkey={{APPKEY}}&autoload=false"></script>
 </head><body>
 <div id="rv"></div>
 <script>
@@ -173,7 +182,23 @@ window.__show = function (panoId, pan) {
   });
 };
 </script></body></html>
-""" % (VIEW_W, VIEW_H, "%s")
+"""
+
+# 화살표를 지우는 CSS. 기본은 비어 있다 (화살표를 남긴다).
+_ARROW_CSS = '#rv [id^="_al_"], #rv [id^="_atl_"] { display: none !important; }'
+
+
+def build_page(appkey: str, *, hide_arrows: bool = False) -> str:
+    """페이지 HTML 조립.
+
+    `%` 포매팅을 쓰지 않는다 — 본문이 CSS 와 JS 라 `%` 가 흔하고, 한 번
+    엇갈리면 원인을 찾기 어려운 방식으로 깨진다.
+    """
+    return (_PAGE
+            .replace("{{W}}", str(VIEW_W))
+            .replace("{{H}}", str(VIEW_H))
+            .replace("{{ARROW_CSS}}", _ARROW_CSS if hide_arrows else "")
+            .replace("{{APPKEY}}", appkey))
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -194,7 +219,7 @@ class KakaoProvider:
     name = "kakao"
 
     def __init__(self, appkey: str, *, host: str = "127.0.0.1", port: int = 8731,
-                 headless: bool = True):
+                 headless: bool = True, hide_arrows: bool = False):
         if not appkey:
             raise ProviderError(
                 "Kakao JS 앱키가 없다. 개발자 콘솔에서 발급하고 플랫폼 > Web 에 "
@@ -206,7 +231,8 @@ class KakaoProvider:
                 "playwright 가 없다:\n"
                 "  pip install -r app/requirements.txt && playwright install chromium") from e
 
-        handler = type("H", (_Handler,), {"page": (_PAGE % appkey).encode()})
+        handler = type("H", (_Handler,), {
+            "page": build_page(appkey, hide_arrows=hide_arrows).encode()})
         self._httpd = HTTPServer((host, port), handler)
         threading.Thread(target=self._httpd.serve_forever, daemon=True).start()
 
@@ -218,6 +244,10 @@ class KakaoProvider:
             args=["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"])
         self._origin = f"http://{host}:{port}"
         self._page = self._browser.new_page(viewport={"width": VIEW_W, "height": VIEW_H})
+        # pano 하나를 띄울 때마다 SDK 가 스스로 노드 정보를 받아온다. 그 응답에
+        # 이웃 목록이 들어 있다 — 우리가 따로 요청하지 않고 지나가는 것을 줍는다.
+        self._spots: dict[str, list[Neighbor]] = {}
+        self._page.on("response", self._sniff_node)
         self._page.goto(self._origin + "/", wait_until="load")
         try:
             self._page.wait_for_function("window.__ready && window.__ready()", timeout=20_000)
@@ -227,6 +257,47 @@ class KakaoProvider:
             reason = diagnose_sdk(appkey, self._origin)
             self.close()
             raise ProviderError(f"Kakao SDK 가 로드되지 않았다.\n  {reason}") from None
+
+    # ── 이웃 (인접 pano) ────────────────────────────────────────────────
+    def _sniff_node(self, response) -> None:
+        """SDK 가 받아온 노드 응답에서 `spot[]` 만 뽑아 둔다.
+
+        **우리는 이 엔드포인트를 직접 부르지 않는다.** 페이지를 정상적으로
+        렌더하는 과정에서 SDK 가 이미 보낸 요청의 응답을 읽을 뿐이다.
+        Kakao 에 나가는 요청 수가 늘지 않는다는 점이 중요하다 —
+        문서화되지 않은 내부 API 를 따로 두드리는 것과는 성격이 다르다.
+        (그래도 문서화된 계약은 아니다 → docs/23-open-questions.md §7)
+        """
+        if NODE_API_MARK not in response.url:
+            return
+        try:
+            street = (response.json().get("street_view") or {}).get("street") or {}
+        except Exception:
+            return                      # 형식이 바뀌면 조용히 포기한다. 탐색은 계속 돈다
+        pid = str(street.get("id") or "")
+        if not pid:
+            return
+        out = []
+        for s in street.get("spot") or []:
+            try:
+                out.append(Neighbor(pano_id=str(s["id"]), heading=float(s["pan"]),
+                                    lat=float(s["wgsy"]), lng=float(s["wgsx"]),
+                                    name=s.get("st_name")))
+            except (KeyError, TypeError, ValueError):
+                continue
+        self._spots[pid] = out
+
+    def neighbors(self, pano: Pano) -> list[Neighbor]:
+        """이 pano 의 인접 pano 들. 화면의 흰 화살표와 같은 것이다.
+
+        `capture`/`nearest` 로 pano 를 이미 띄운 뒤에 부른다 — 그때 SDK 가
+        노드 응답을 받아오기 때문이다. 아직 안 왔으면 잠깐 기다린다.
+        """
+        for _ in range(20):             # 최대 2초
+            if pano.pano_id in self._spots:
+                return self._spots[pano.pano_id]
+            self._page.wait_for_timeout(100)
+        return []
 
     def nearest(self, lat: float, lng: float, radius_m: float) -> Pano | None:
         pid = self._page.evaluate(
