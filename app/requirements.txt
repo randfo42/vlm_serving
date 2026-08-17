@@ -1,0 +1,13 @@
+# 애플리케이션(trailwalk) 의존성. 서빙 쪽과 별개다.
+#
+#   pip install -r app/requirements.txt
+#   playwright install chromium      # kakao provider 를 쓸 때만
+
+pillow>=11            # 이미지 디코드/리사이즈/JPEG 인코드 — imaging.py 필수
+
+# kakao provider 전용. Kakao 로드뷰에 서버사이드 REST 가 없어서 브라우저를 몬다.
+# → app/docs/21-roadview-providers.md
+playwright>=1.48
+
+# equirect_to_view() 전용. 렌더된 뷰포트만 쓰는 provider 에서는 필요 없다.
+numpy>=2.0

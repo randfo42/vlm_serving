@@ -6,6 +6,14 @@ models/
 bench/results/
 data/images/
 
+# 애플리케이션 런로그. 실행마다 쌓이고 재현 가능하다.
+# 보존할 런은 app/runs/keep/ 로 옮긴다.
+app/runs/*.jsonl
+
+# 지도 API 로 받은 이미지는 커밋하지 않는다. 사업자 약관상 이미지 캐싱이
+# 회색지대다 → app/docs/23-open-questions.md §2
+app/runs/images/
+
 # Python
 .venv/
 __pycache__/

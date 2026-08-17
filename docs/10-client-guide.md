@@ -301,6 +301,12 @@ throughput이 필요하면 요청을 큐에 넣고 순차 처리하는 편이 �
 
 ## 8. 최소 예제
 
+> 이 규칙들을 실제로 구현한 클라이언트가 같은 레포에 있다: **`../app/`**.
+> `app/trailwalk/imaging.py` 가 §2 를, `app/trailwalk/vlm.py` 가 §4~§6 을,
+> `app/prompts/system_v1.txt` + `app/trailwalk/prompt.py` 가 §3.1 의 바이트 동일성을
+> 담당한다. 새 클라이언트를 쓰기 전에 그쪽을 먼저 볼 것.
+
+
 ```python
 import base64, io, json, urllib.request
 from PIL import Image
