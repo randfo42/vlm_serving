@@ -38,8 +38,10 @@ def main() -> int:
     ap.add_argument("--step-m", type=float, default=WalkConfig.step_m)
     ap.add_argument("--candidates", type=int, default=WalkConfig.max_candidates,
                     help="한 스텝에서 최대 몇 방향까지 물어볼지 (기본 3)")
-    ap.add_argument("--probe-sides-every", type=int, default=0,
-                    help="N 스텝마다 갈림길 확인. 0=끄기 (기본). 호출이 3배로 는다")
+    ap.add_argument("--probe-all", dest="probe_all", action="store_true", default=None,
+                    help="후보를 항상 전부 물어본다 (기본: 그래프면 전부, 폴백이면 첫 성공에서 멈춤)")
+    ap.add_argument("--first-hit", dest="probe_all", action="store_false",
+                    help="첫 성공에서 멈춘다. 갈림길을 놓치는 대신 호출이 준다")
     ap.add_argument("--schema", default="walk", choices=sorted(P.SCHEMAS),
                     help="walk=is_trail 만(빠름) / eval=+confidence(ROC 용)")
     ap.add_argument("--url", default=DEFAULT_URL)
@@ -56,8 +58,7 @@ def main() -> int:
         APP / "runs" / f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{a.provider}.jsonl")
 
     cfg = WalkConfig(step_m=a.step_m, max_steps=a.steps,
-                     probe_sides_every=a.probe_sides_every,
-                     max_candidates=a.candidates)
+                     probe_all=a.probe_all, max_candidates=a.candidates)
     client = VlmClient(url=a.url, schema_name=a.schema)
     try:
         prov = providers.make(a.provider, headless=not a.headed)
@@ -111,6 +112,12 @@ def main() -> int:
               f"가변값이 섞였는지 확인 (docs/10-client-guide.md §3.1)")
     if s.parse_failures:
         print(f"⚠  JSON 파싱 실패 {s.parse_failures}회")
+    if res.frontier:
+        # 가지 않은 갈래. 버리지 않고 보여준다 — 분기 탐색을 붙일 때 이게 입력이다.
+        print(f"\n가지 않은 산책로 갈래 {len(res.frontier)}개:")
+        for f in res.frontier[:10]:
+            print(f"  s{f['from_step']:>3} {f['from_pano']} → {f['heading']:6.1f}° "
+                  f"{f['pano_id'] or '(좌표 밀기)'}")
     return 0
 
 

@@ -43,6 +43,10 @@ VIEW_W, VIEW_H = 1280, 720   # 16:9 — imaging.TARGET_SIZE 와 맞춰 리사이
 # 우리는 **추가 요청을 보내지 않고 응답만 가로챈다** (→ neighbors()).
 NODE_API_MARK = "roadview-search/v2/node/"
 
+# 프레임 안정화. 연속 두 스크린샷이 같아질 때까지 기다린다 (→ capture()).
+RENDER_SETTLE_MS = 150
+RENDER_SETTLE_TRIES = 6
+
 SDK_URL = "https://dapi.kakao.com/v2/maps/sdk.js?appkey={key}&autoload=false"
 
 
@@ -247,6 +251,7 @@ class KakaoProvider:
         # pano 하나를 띄울 때마다 SDK 가 스스로 노드 정보를 받아온다. 그 응답에
         # 이웃 목록이 들어 있다 — 우리가 따로 요청하지 않고 지나가는 것을 줍는다.
         self._spots: dict[str, list[Neighbor]] = {}
+        self._unsettled = 0        # 프레임이 끝내 안 멎은 캡처 수 (→ capture())
         self._page.on("response", self._sniff_node)
         self._page.goto(self._origin + "/", wait_until="load")
         try:
@@ -332,7 +337,27 @@ class KakaoProvider:
             self._page.evaluate("([p,h]) => window.__show(p,h)", [pano.pano_id, heading % 360])
         except Exception as e:
             raise ProviderError(f"로드뷰 렌더 실패 (pano={pano.pano_id}): {e}") from e
-        return self._page.locator("#rv").screenshot(type="png")
+
+        # ⚠️ 프레임이 **안정될 때까지** 찍는다. 고정 대기로는 부족하다.
+        #
+        # 새 pano 로 전환한 직후 첫 스크린샷이 타일이 덜 붙은 프레임인 경우가
+        # 있다. 실측으로 잡았다 — 같은 pano·같은 방위에서 1회차만 다른 PNG 가
+        # 나왔고, 그 반쯤 로드된 그림이 **반대 판정**을 받아 탐색이 다른 길로
+        # 새어버렸다. (모델 자체는 결정적이다: 같은 바이트 → 같은 답.)
+        #
+        # 스크린샷은 로컬이라 싸고, VLM 호출이 2.2초로 비싸다. 몇백 ms 를 더
+        # 써서 판정 하나를 지키는 쪽이 압도적으로 남는 장사다.
+        prev = self._page.locator("#rv").screenshot(type="png")
+        for _ in range(RENDER_SETTLE_TRIES):
+            self._page.wait_for_timeout(RENDER_SETTLE_MS)
+            cur = self._page.locator("#rv").screenshot(type="png")
+            if cur == prev:
+                return cur
+            prev = cur
+        # 끝내 안 멎었다. 마지막 프레임을 쓰되 조용히 넘기지는 않는다 —
+        # 이 로그가 잦으면 대기 상수를 올려야 한다는 신호다.
+        self._unsettled += 1
+        return prev
 
     def close(self) -> None:
         for shut in (lambda: self._browser.close(), lambda: self._pw.stop(),

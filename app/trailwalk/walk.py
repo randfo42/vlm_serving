@@ -9,8 +9,9 @@ VLM 에게 묻는 것은 오직 **"이 장면이 산책로인가"** 하나다. �
     현재 pano
       → 이웃 목록 (화면의 흰 화살표와 같은 것). 온 길과 이미 밟은 곳은 뺀다
       → 진행 방향에 가까운 순으로 정렬 — 맨 앞이 "정면"
-      → 정면부터 한 장씩 캡처해 VLM 에 묻는다
-      → 산책로라고 답한 첫 후보로 **그 pano 로 바로 이동**
+      → 후보를 한 장씩 캡처해 VLM 에 묻는다 (그래프면 전부, 폴백이면 첫 성공까지)
+      → 산책로 중 **가장 정면인 것**으로 그 pano 로 바로 이동
+      → 나머지 산책로 갈래는 frontier 에 남긴다 — 여러 방향이 동시에 산책로일 수 있다
 
 ### 왜 이웃 그래프인가
 
@@ -46,8 +47,19 @@ class WalkConfig:
     fov_deg: float = 90.0
     max_candidates: int = 3       # 한 스텝에서 최대 몇 방향까지 물어볼지
     max_turn_deg: float = 120.0   # 이보다 크게 꺾이는 이웃은 후보에서 뺀다 (U턴 방지)
-    probe_sides_every: int = 0    # >0 이면 N 스텝마다 후보를 전부 물어 갈림길을 기록
     max_steps: int = 120
+
+    # 후보를 전부 물을 것인가, 첫 성공에서 멈출 것인가.
+    #
+    # None = 자동: **그래프면 전부, 폴백이면 첫 성공에서 멈춤.**
+    #
+    # 근거가 비용이다. 그래프 후보는 온 길을 뺀 실제 이웃이라 직선 구간에서는
+    # 개수가 1이다 — 전부 물어도 1호출이고, 개수가 2 이상인 곳은 진짜 갈림길이라
+    # 어차피 알아야 한다. 즉 늘어나야 할 곳에서만 늘어난다.
+    #
+    # 폴백 후보(bearing, ±60°)는 성격이 다르다. 실제 갈래가 아니라 추측이고
+    # 항상 3개다. 전부 물으면 매 스텝 3배가 되는데 얻는 게 없다.
+    probe_all: bool | None = None
     max_seconds: float = 900.0
     miss_tolerance: int = 2       # 어느 방향도 산책로가 아닌 스텝을 몇 번 참을지
     revisit_tolerance: int = 3
@@ -66,6 +78,12 @@ class WalkResult:
     calls: int = 0
     wall_s: float = 0.0
     used_graph: bool = False
+
+    # 산책로라고 판정됐지만 가지 않은 갈래들. 한 지점에서 여러 방향이 동시에
+    # 산책로일 수 있고(갈림길이 그런 곳이다), 우리는 그중 하나만 따라간다.
+    # 나머지를 버리지 않고 남긴다 — 나중에 분기 탐색을 붙일 때 이게 그대로
+    # 프론티어가 된다 (→ docs/23-open-questions.md §8).
+    frontier: list[dict] = field(default_factory=list)
 
 
 def _candidates(provider, pano: Pano, bearing: float, came_from: str | None,
@@ -169,14 +187,14 @@ def walk(provider, client, start: tuple[float, float], start_bearing: float,
                 log.event("no_candidates", step=res.steps, pano_id=pano.pano_id)
             break
 
-        force_all = cfg.probe_sides_every and res.steps % cfg.probe_sides_every == 0
+        probe_all = cfg.probe_all if cfg.probe_all is not None else graph
         chosen: tuple[float, Neighbor | None] | None = None
         oks: list[tuple[float, Neighbor | None]] = []
         try:
             for hdg, nb in cands:
                 if probe(pano, hdg, res.steps):
                     oks.append((hdg, nb))
-                    if not force_all:
+                    if not probe_all:
                         break       # 정면에 가까운 쪽부터 봤으니 첫 성공이 최선이다
         except ImageIgnoredError:
             res.stop_reason = "image_ignored"; raise
@@ -187,15 +205,27 @@ def walk(provider, client, start: tuple[float, float], start_bearing: float,
                 log.event("vlm_error", step=res.steps, error=str(e)[:400])
             res.stop_reason = "vlm_error"; break
 
-        if len(oks) > 1 and log:
-            log.event("branch", step=res.steps, pano_id=pano.pano_id,
-                      headings=[round(h, 1) for h, _ in oks])
         if oks:
             chosen = oks[0]         # 가장 정면에 가까운 산책로
 
+        # 갈림길: 산책로가 둘 이상이면 하나만 따라가고 나머지는 남긴다.
+        # 여기가 "여러 방향이 동시에 산책로일 수 있다" 를 실제로 담는 곳이다.
+        if len(oks) > 1:
+            for hdg, nb in oks[1:]:
+                res.frontier.append({
+                    "from_pano": pano.pano_id, "from_step": res.steps,
+                    "heading": round(hdg, 1),
+                    "pano_id": nb.pano_id if nb else None,
+                    "lat": nb.lat if nb else None, "lng": nb.lng if nb else None,
+                })
+            if log:
+                log.event("branch", step=res.steps, pano_id=pano.pano_id,
+                          taken=round(oks[0][0], 1),
+                          left=[round(h, 1) for h, _ in oks[1:]])
+
         res.path.append({"pano_id": pano.pano_id, "lat": pano.lat, "lng": pano.lng,
                          "bearing": round(bearing, 1), "is_trail": chosen is not None,
-                         "n_candidates": len(cands)})
+                         "n_candidates": len(cands), "n_trails": len(oks)})
 
         if chosen is None:
             misses += 1
