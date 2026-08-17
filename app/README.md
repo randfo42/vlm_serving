@@ -39,17 +39,44 @@ python app/run_walk.py --provider fixture --start 37.5665,126.9780 --bearing 90 
 
 ### 3. 실제 로드뷰 — ⚠️ 아직 미검증
 
-Kakao JS 앱키가 필요하고, `http://127.0.0.1:8731` 을 개발자 콘솔의
-플랫폼 > Web 사이트 도메인에 등록해야 한다. **먼저 `docs/23-open-questions.md` §1 을 읽을 것.**
+키는 `app/.env` 에 둔다 (형식: `app/.env.example`). 커밋되지 않고, 코드가
+`trailwalk.config.load_env()` 로 알아서 읽으므로 명령줄에 붙일 필요가 없다.
 
 ```bash
+cp app/.env.example app/.env      # 값을 채운다
 playwright install chromium
-KAKAO_JS_KEY=xxx python app/run_walk.py --provider kakao \
+python app/run_walk.py --provider kakao \
     --start 37.5768,127.0246 --bearing 90 --steps 20 --headed
 ```
 
+> ⚠️ **REST API 키가 아니라 JavaScript 키다.** 콘솔의 앱 키 화면에 네 종류가
+> 나란히 있고 전부 32자라 겉으로 구별되지 않는다. 잘못 넣으면 증상이
+> "로드뷰가 안 뜬다" 로만 보여서 커버리지 문제로 오인하기 쉽다.
+> 그리고 플랫폼 > Web > 사이트 도메인에 `http://127.0.0.1:8731` 을 등록해야 한다.
+
 `--headed` 로 시작한다. 완전 headless 에서 WebGL 이 안 그려져 검은 화면이 찍히는
 경우가 있고, 그러면 원인을 로드뷰 커버리지로 오인하기 쉽다.
+
+**먼저 `docs/23-open-questions.md` §1 을 읽을 것.**
+
+### 비밀값 취급
+
+`app/.env` 는 **Claude 가 읽지 못한다.** `.claude/hooks/block-secret-reads.py` 가
+Read/Edit/Write/Grep/Glob/Bash 의 접근을 막는다 — 값이 한 번 대화 컨텍스트에
+들어가면 트랜스크립트와 이후 모든 요청에 남고 되돌릴 수 없기 때문이다.
+
+값 없이 상태만 확인하려면:
+
+```bash
+python3 .claude/hooks/keycheck.py
+# app/.env  (50 bytes, mode 644)
+#   gitignore: ✓ 무시됨
+#   KAKAO_MAP_API_KEY         32자  sha256:81c5c6da
+```
+
+키 이름·길이·지문·gitignore 상태만 나오고 값은 나오지 않는다. 지문으로 "같은
+키인지" 는 비교할 수 있고 원문은 복원할 수 없다. `.env.example` 은 값이 없는
+형식 파일이라 막지 않는다.
 
 ### 4. 레이블
 

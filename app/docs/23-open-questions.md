@@ -14,14 +14,29 @@ Kakao 가 공원·좁은 산책로를 배낭형 장비로 도보 촬영한다는
 
 ### 막고 있는 것
 
-1. **Kakao JS 앱키.** 개발자 콘솔에서 발급 → 플랫폼 > Web 사이트 도메인에
-   `http://127.0.0.1:8731` 등록
-2. **Playwright.** `pip install -r app/requirements.txt && playwright install chromium`
+| | 상태 |
+|---|---|
+| Kakao 앱키 | 🟡 `app/.env` 의 `KAKAO_MAP_API_KEY` 에 32자 값이 들어옴. **종류 미확인** (아래) |
+| 플랫폼 도메인 등록 | ⬜ 콘솔 > 플랫폼 > Web 에 `http://127.0.0.1:8731` |
+| Playwright | ⬜ `pip install -r app/requirements.txt && playwright install chromium` |
+
+#### ⚠️ 등록된 키가 REST API 키일 가능성
+
+키를 넣으며 "REST api key" 라고 했는데, **로드뷰는 JavaScript 키를 요구한다.**
+`kakao.maps.Roadview` 는 JS SDK 에만 있고, SDK 로더의 `appkey` 파라미터는
+JavaScript 키를 받는다. REST 키로는 SDK 가 로드되지 않는다.
+
+콘솔의 앱 키 화면에는 네이티브/REST/JavaScript/Admin 키가 나란히 있고 **전부
+32자 16진수라 값만 보고는 구별되지 않는다.** 자동으로 검증할 방법이 없다.
+
+증상이 고약하다 — 잘못된 키를 넣으면 SDK 로드가 실패하고, 화면에는 아무것도
+안 뜬다. 그러면 "이 좌표에 로드뷰 커버리지가 없다" 로 오인하기 딱 좋다.
+**§1 의 커버리지 확인을 하기 전에 키 종류부터 확정할 것.**
 
 ### 확인 순서
 
 ```bash
-KAKAO_JS_KEY=xxx python app/run_walk.py --provider kakao \
+python app/run_walk.py --provider kakao \
     --start 37.5768,127.0246 --bearing 90 --steps 5 --headed
 ```
 
@@ -33,9 +48,13 @@ KAKAO_JS_KEY=xxx python app/run_walk.py --provider kakao \
 
 | 증상 | 뜻 |
 |---|---|
+| 브라우저 콘솔에 SDK 인증 오류 / 아무것도 안 뜸 | **키 종류나 도메인 등록 문제.** 커버리지가 아니다 |
 | `stop_reason: no_coverage` 가 즉시 | 그 좌표에 로드뷰가 없다. 커버리지 문제 |
-| 화면이 검다 | 렌더 문제. 로드뷰 탓이 아니다 |
+| 화면이 검다 | 렌더 문제(WebGL). 로드뷰 탓이 아니다 |
 | 모두 `is_trail=false` 인데 그림은 멀쩡 | 프롬프트/판정 문제 |
+
+**네 가지가 겉으로는 다 "안 된다" 로 보인다.** `--headed` 로 브라우저를 띄워
+직접 보는 것이 이들을 가르는 가장 빠른 방법이다.
 
 **표본은 테마별로 고를 것.** "한강·하천이 좋은 길"(하천변, 차도와 가까움)과
 "숲이 좋은 길"(산속, 차량 진입 불가)은 커버리지가 정반대일 가능성이 크다.

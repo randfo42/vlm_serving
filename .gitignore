@@ -14,6 +14,12 @@ app/runs/*.jsonl
 # 회색지대다 → app/docs/23-open-questions.md §2
 app/runs/images/
 
+# 비밀값 — 절대 커밋하지 않는다.
+# 형식만 app/.env.example 에 남기고 값은 각자 로컬에 둔다.
+.env
+.env.*
+!.env.example
+
 # Python
 .venv/
 __pycache__/
