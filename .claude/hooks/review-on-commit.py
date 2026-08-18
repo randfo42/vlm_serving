@@ -52,12 +52,20 @@ GUARD = "TRAILWALK_IN_REVIEW"
 # 구분자 사이에는 역슬래시 줄바꿈이 낄 수 있다: `git -C /repo \<개행> commit`.
 # `\s` 는 역슬래시를 안 먹으므로 따로 넣어준다.
 _SP = r"[\s\\]+"
-GIT_COMMIT = re.compile(
-    r"(?<![\w./-])git"
-    rf"(?:{_SP}(?:-[cC]{_SP}\S+"
-    rf"|--(?:git-dir|work-tree|namespace|exec-path|config-env)(?:=\S+|{_SP}\S+)"
-    r"|-\S+))*"
-    rf"{_SP}commit(?![\w-])")
+
+
+def _git_cmd(sub: str) -> re.Pattern:
+    return re.compile(
+        r"(?<![\w./-])git"
+        rf"(?:{_SP}(?:-[cC]{_SP}\S+"
+        rf"|--(?:git-dir|work-tree|namespace|exec-path|config-env)(?:=\S+|{_SP}\S+)"
+        r"|-\S+))*"
+        rf"{_SP}(?:{sub})(?![\w-])")
+
+
+GIT_COMMIT = _git_cmd("commit")
+# 스테이징 명령. commit 과 한 명령에 묶였는지 볼 때 쓴다 (→ stages_before_commit).
+GIT_STAGE = _git_cmd("add|rm|mv")
 
 # 셸 명령 구분자. 이 뒤는 **다른 명령**이라 앞 명령의 플래그 판정에 섞이면 안 된다.
 SEPARATORS = (";", "&&", "||", "|", "&")
@@ -261,6 +269,43 @@ def staged_diff(root: Path, cmd: str) -> str:
     return run(["git", "diff", "--cached"], root).stdout
 
 
+def stages_before_commit(cmd: str) -> bool:
+    """commit **앞 구간**에 스테이징 명령(git add/rm/mv)이 있는가.
+
+    ⚠️ 실전에서 뚫린 지점이다 (2026-08-18). `git add X && git commit` 을 한 Bash
+    명령으로 묶으면 훅이 도는 PreToolUse 시점엔 스테이지가 아직 비어 있다.
+    --cached 만 보던 main() 은 "커밋할 게 없다" 로 오인해 조용히 통과시켰고,
+    커밋 4개가 ruff·pytest 게이트조차 없이 들어갔다. 이 훅에서 가장 나쁜
+    실패 방식 — 조용한 통과 — 이 또 이 유형이다.
+
+    commit **앞**만 보는 이유: 커밋 메시지 본문(-m, heredoc)의 "git add" 언급은
+    전부 commit 뒤에 오므로 자연히 빠진다. `--no-verify` 가 겪은 언급-오인을
+    같은 방식으로 피한다. 반대로 echo 등에 낀 언급이 앞에 있으면 잡히는데,
+    그 방향의 오류는 리뷰가 한 번 더 도는 것뿐이라 안전하다 — 애매하면
+    리뷰를 돌리는 쪽으로 틀린다.
+    """
+    m = GIT_COMMIT.search(cmd)
+    return bool(m and GIT_STAGE.search(cmd[:m.start()]))
+
+
+def worktree_diff(root: Path) -> str:
+    """스테이지가 아직 비어 있을 때의 best-effort diff.
+
+    추적 파일의 변경(`git diff HEAD`)에 미추적·비무시 파일의 전문을 이어붙인다.
+    새 파일이 `git add` 되는 경우가 흔한데 diff HEAD 에는 안 보이기 때문이다.
+
+    **과대근사다** — 이번 커밋에 안 들어갈 파일까지 섞일 수 있다. 리뷰 목적에는
+    넓은 쪽이 안전하다: 좁으면 조용히 스킵되고, 넓으면 기껏해야 리뷰어가
+    남는 파일을 몇 개 더 본다.
+    """
+    parts = [run(["git", "diff", "HEAD"], root).stdout]
+    others = run(["git", "ls-files", "--others", "--exclude-standard"], root).stdout
+    for f in others.splitlines():
+        if f:
+            parts.append(run(["git", "diff", "--no-index", "--", "/dev/null", f], root).stdout)
+    return "".join(parts)
+
+
 def gate_lint_and_tests(root: Path, py: str) -> str | None:
     """실패 사유를 돌려준다. 통과면 None.
 
@@ -371,6 +416,10 @@ def main() -> None:
         py = sys.executable
 
     diff = staged_diff(root, cmd)
+    if not diff.strip() and stages_before_commit(cmd):
+        # `git add X && git commit` — 훅 시점엔 스테이지가 비어 있지만 커밋할 게
+        # 없는 것이 아니다. 여기서 emit() 하면 검사가 통째로 조용히 스킵된다.
+        diff = worktree_diff(root)
     if not diff.strip():
         emit()                              # 커밋할 게 없다. git 이 알아서 말한다
 

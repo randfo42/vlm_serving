@@ -182,6 +182,64 @@ def test_커밋_메시지_본문의_all_언급에는_안_속는다(hook):
     assert not ("--all" in tokens or hook._has_short(tokens, "a"))
 
 
+# ── add && commit 을 한 명령에 묶은 경우 ────────────────────────────────────
+# ⚠️ 실전에서 뚫린 지점 (2026-08-18). 훅은 PreToolUse 에 돌므로 `git add X &&
+# git commit` 에서는 스테이지가 아직 비어 있다. --cached 만 보면 "커밋할 게
+# 없다" 로 오인해 ruff·pytest 게이트와 리뷰가 전부 조용히 건너뛰어진다 —
+# 커밋 4개가 실제로 이 경로로 리뷰 없이 통과했다.
+
+@pytest.mark.parametrize("cmd", [
+    "git add f.py && git commit -m x",
+    "git add -A; git commit -m x",
+    "git rm old.py && git commit -m x",
+    "git mv a b && git commit -m x",
+    "git add f\ngit commit -m x",
+    "git -C /repo add f && git -C /repo commit -m x",
+])
+def test_스테이징과_커밋을_한_명령에_묶으면_감지한다(hook, cmd):
+    assert hook.stages_before_commit(cmd) is True
+
+
+@pytest.mark.parametrize("cmd", [
+    "git commit -m x",                     # 스테이징 없음 — 빈 스테이지면 여전히 조용히 통과
+    "git commit -m x && git add f",        # 커밋 뒤의 add 는 이 커밋과 무관하다
+    "git commit -F - <<'MSG'\ngit add 를 먼저 할 것\nMSG",   # 본문 언급은 commit 뒤라 안 속는다
+    "git status && git commit -m x",
+])
+def test_스테이징이_없으면_기존_판정_그대로다(hook, cmd):
+    assert hook.stages_before_commit(cmd) is False
+
+
+def _git(cwd, *args):
+    import subprocess
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+                   cwd=cwd, check=True, capture_output=True)
+
+
+def test_미추적_새_파일이_best_effort_diff에_들어간다(hook, tmp_path):
+    """새 파일 커밋이 흔한 경우인데 `git diff HEAD` 에는 안 보인다.
+    빠지면 CLAUDE.md 만 추가하는 커밋이 도로 빈 diff 로 오인된다."""
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "a.py").write_text("x = 1\n")
+    _git(tmp_path, "add", "a.py")
+    _git(tmp_path, "commit", "-qm", "init")
+    (tmp_path / "a.py").write_text("x = 2\n")          # 추적 파일 수정 (미스테이지)
+    (tmp_path / "new.py").write_text("y = 3\n")        # 미추적 새 파일
+    diff = hook.worktree_diff(tmp_path)
+    assert "new.py" in diff and "y = 3" in diff, "미추적 파일이 빠졌다"
+    assert "x = 2" in diff, "추적 파일의 미스테이지 변경이 빠졌다"
+
+
+def test_gitignore된_파일은_best_effort_diff에_안_들어간다(hook, tmp_path):
+    """무시 파일까지 섞으면 .env 같은 비밀값이 리뷰 프롬프트로 새어 나간다."""
+    _git(tmp_path, "init", "-q")
+    (tmp_path / ".gitignore").write_text("secret.txt\n")
+    _git(tmp_path, "add", ".gitignore")
+    _git(tmp_path, "commit", "-qm", "init")
+    (tmp_path / "secret.txt").write_text("HUSH-VALUE\n")
+    assert "HUSH-VALUE" not in hook.worktree_diff(tmp_path)
+
+
 # ── 에이전트 응답에서 findings 뽑기 ─────────────────────────────────────────
 # ⚠️ 이 경로는 실패하면 fail-open 이다. 못 읽으면 blocking 지적이 있어도
 # 커밋이 통과한다 — 리뷰가 돌았는데 결과만 버려지는, 가장 나쁜 실패다.
