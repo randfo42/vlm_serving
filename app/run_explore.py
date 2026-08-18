@@ -11,6 +11,7 @@
 walk 는 한 길을 따라가고 explore 는 갈래를 전부 간다.
 """
 import argparse
+import json
 import sys
 import time
 from datetime import UTC, datetime
@@ -49,6 +50,9 @@ def main() -> int:
     ap.add_argument("--warmup", action="store_true",
                     help="첫 호출 전에 버리는 요청을 1회 보낸다. 지연을 재는 런에서는 켤 것")
     ap.add_argument("--out", default=None, help="런로그 경로 (기본: app/runs/<시각>-explore.jsonl)")
+    ap.add_argument("--dump", default=None,
+                    help="탐색 결과(nodes·probes·frontier)를 JSON 으로 저장. "
+                         "플롯과 웹 UI 가 소비하는 형태다 (좌표·판정만 — 이미지 없음)")
     a = ap.parse_args()
 
     lat, lng = (float(x) for x in a.start.split(","))
@@ -95,6 +99,14 @@ def main() -> int:
                            mean_latency_ms=round(s.total_ms / s.calls, 1) if s.calls else None)
     finally:
         prov.close()
+
+    if a.dump:
+        Path(a.dump).write_text(json.dumps(
+            {"start": [lat, lng], "stop_reason": res.stop_reason,
+             "used_graph": res.used_graph, "calls": res.calls,
+             "nodes": res.nodes, "probes": res.probes, "frontier": res.frontier},
+            ensure_ascii=False, indent=1), encoding="utf-8")
+        print(f"결과 JSON: {a.dump}")
 
     s = client.stats
     trails = sum(1 for p in res.probes if p["is_trail"])

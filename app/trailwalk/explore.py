@@ -74,7 +74,7 @@ class ExploreResult:
     # 판정 하나하나 = 그래프의 간선. UI 마킹의 원천 데이터다
     probes: list[dict] = field(default_factory=list)   # from_pano, heading, to_pano, is_trail
     # 예산(depth/호출/시간)에 걸려 못 간 갈래. 이어서 탐색할 때의 입력
-    frontier: list[dict] = field(default_factory=list)  # from_pano, pano_id, lat, lng, reason
+    frontier: list[dict] = field(default_factory=list)  # from_pano, pano_id, 좌표, depth, reason
     stop_reason: str = ""          # exhausted = 갈 곳을 다 갔다. 나머지는 예산/오류
     calls: int = 0
     wall_s: float = 0.0
@@ -222,8 +222,12 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
                 # 이 레포의 사고는 전부 그런 혼동에서 났다. 로그(capture_failed)만 남긴다
                 continue
 
+            # to_* 는 그리기/UI 용이다. 폴백 후보는 목표 pano 가 없어 None —
+            # 그 경우 좌표는 heading 방향으로 step_m 민 곳이 근사값이다
             res.probes.append({"from_pano": node.pano.pano_id, "heading": round(hdg, 1),
                                "to_pano": nb.pano_id if nb else None,
+                               "to_lat": nb.lat if nb else None,
+                               "to_lng": nb.lng if nb else None,
                                "is_trail": ok, "depth": node.depth})
             if nb is not None:
                 # 첫 접근의 판정이 그 pano 의 판정이다 — 참이든 거짓이든 다시 묻지 않는다
