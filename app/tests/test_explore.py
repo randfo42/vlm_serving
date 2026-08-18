@@ -27,15 +27,16 @@ def run(provider, verdicts, bearing=0.0, **cfg):
 
 def test_시작점에서_모든_이웃을_묻는다():
     """walk 는 정면부터 보지만 explore 의 시작점에는 "온 길" 이 없다."""
-    p = Provider({"S": [nb("A", 90.0), nb("B", 270.0), nb("C", 0.0)]})
+    p = Provider({"S": [nb("A", 90.0), nb("B", 270.0), nb("C", 0.0)],
+                  "A": [nb("S", 270.0)], "B": [nb("S", 90.0)], "C": [nb("S", 180.0)]})
     run(p, {})
-    assert {("S", 90.0), ("S", 270.0), ("S", 0.0)} <= set(p.probes)
+    assert set(p.probes) == {("S", 90.0), ("S", 270.0), ("S", 0.0)}
 
 
 def test_폴백_시작점은_전방향을_본다():
     """그래프가 없으면 이웃 목록이 없다. start_offsets 로 전방향을 흉내낸다."""
     p = Provider({})
-    res = run(p, {})
+    res = run(p, {}, max_vlm_calls=4)
     assert p.probes == [("S", 0.0), ("S", 90.0), ("S", 180.0), ("S", 270.0)]
     assert res.used_graph is False
 
@@ -53,7 +54,9 @@ def test_시작점에_로드뷰가_없으면_no_coverage():
 def test_갈림길의_갈래를_전부_간다():
     """walk 는 하나를 고르고 나머지를 frontier 에 남긴다. explore 는 다 간다."""
     p = Provider({"S": [nb("A", 90.0), nb("C", 270.0)],
-                  "A": [nb("A2", 90.0)], "C": [nb("C2", 270.0)]})
+                  "A": [nb("S", 270.0), nb("A2", 90.0)],
+                  "C": [nb("S", 90.0), nb("C2", 270.0)],
+                  "A2": [nb("A", 270.0)], "C2": [nb("C", 90.0)]})
     res = run(p, {("S", 90.0): True, ("S", 270.0): True,
                   ("A", 90.0): True, ("C", 270.0): True})
     ids = {n["pano_id"] for n in res.nodes}
@@ -64,7 +67,7 @@ def test_갈림길의_갈래를_전부_간다():
 def test_같은_pano는_한_번만_판정한다():
     """마름모: S→A→D 와 S→B→D. 첫 접근의 판정이 D 의 판정이다."""
     p = Provider({"S": [nb("A", 45.0), nb("B", 315.0)],
-                  "A": [nb("D", 315.0)], "B": [nb("D", 45.0)], "D": []})
+                  "A": [nb("D", 315.0)], "B": [nb("D", 45.0)], "D": [nb("A", 135.0)]})
     res = run(p, {("S", 45.0): True, ("S", 315.0): True,
                   ("A", 315.0): True, ("B", 45.0): True})
     d_probes = [pr for pr in res.probes if pr["to_pano"] == "D"]
@@ -75,13 +78,14 @@ def test_같은_pano는_한_번만_판정한다():
 def test_아니라고_판정된_pano도_다시_묻지_않는다():
     """A 쪽에서 D 를 거절했으면 B 쪽에서 또 묻지 않는다. 호출은 돈이다."""
     p = Provider({"S": [nb("A", 45.0), nb("B", 315.0)],
-                  "A": [nb("D", 315.0)], "B": [nb("D", 45.0)]})
+                  "A": [nb("D", 315.0)], "B": [nb("D", 45.0)], "D": [nb("A", 135.0)]})
     res = run(p, {("S", 45.0): True, ("S", 315.0): True})
     assert len([pr for pr in res.probes if pr["to_pano"] == "D"]) == 1
 
 
 def test_온_길은_다시_묻지_않는다():
-    p = Provider({"S": [nb("A", 90.0)], "A": [nb("S", 270.0), nb("B", 90.0)]})
+    p = Provider({"S": [nb("A", 90.0)], "A": [nb("S", 270.0), nb("B", 90.0)],
+                  "B": [nb("A", 270.0)]})
     run(p, {("S", 90.0): True})
     assert ("A", 270.0) not in p.probes
 
@@ -116,10 +120,45 @@ def test_call_budget에서_멈추고_나머지를_frontier에_남긴다():
 
 
 def test_예산_안에서_끝나면_frontier가_비어_있다():
-    p = Provider({"S": [nb("A", 90.0)], "A": []})
+    p = Provider({"S": [nb("A", 90.0)], "A": [nb("S", 270.0)]})
     res = run(p, {("S", 90.0): True})
     assert res.frontier == []
     assert res.stop_reason == "exhausted"
+
+
+# ── "아님" 판정도 확장한다 ──────────────────────────────────────────────────
+
+def test_아님_판정도_확장해서_건너편_산책로를_찾는다():
+    """차도 pano 에서 시작하는 실측 시나리오. 차도(false)를 다리 삼아 건너면
+    램프(true)가 나온다 — 예전 설계는 여기서 2호출 만에 죽었다."""
+    p = Provider({"S": [nb("A", 90.0)],
+                  "A": [nb("S", 270.0), nb("B", 180.0)],
+                  "B": [nb("A", 0.0)]})
+    res = run(p, {("A", 180.0): True})           # S→A 는 차도(false), A→B 가 산책로
+    assert {n["pano_id"] for n in res.nodes} == {"S", "A", "B"}
+    by_id = {n["pano_id"]: n for n in res.nodes}
+    assert by_id["A"]["is_trail"] is False       # 다리였다는 사실이 남는다
+    assert by_id["B"]["is_trail"] is True
+    assert by_id["S"]["is_trail"] is None        # 시작 노드는 판정 전
+
+
+def test_expand_non_trail을_끄면_예전처럼_갈래가_죽는다():
+    p = Provider({"S": [nb("A", 90.0)],
+                  "A": [nb("S", 270.0), nb("B", 180.0)], "B": [nb("A", 0.0)]})
+    res = run(p, {("A", 180.0): True}, expand_non_trail=False)
+    assert [n["pano_id"] for n in res.nodes] == ["S"]
+    assert ("A", 180.0) not in p.probes
+
+
+def test_산책로_갈래_큐를_먼저_비운다():
+    """예산은 산책로를 따라가는 데 먼저 쓰인다. 다리(아님)는 그다음이다."""
+    p = Provider({"S": [nb("A", 0.0), nb("X", 90.0)],
+                  "A": [nb("S", 180.0), nb("A2", 0.0)],
+                  "X": [nb("S", 270.0), nb("X2", 90.0)],
+                  "A2": [nb("A", 180.0)], "X2": [nb("X", 270.0)]})
+    run(p, {("S", 0.0): True, ("A", 0.0): True}, max_vlm_calls=3)
+    # S 에서 A(산책로)·X(아님)를 물은 뒤, 세 번째 호출은 X 가 아니라 A 쪽이어야 한다
+    assert p.probes[2][0] == "A"
 
 
 # ── 폴백 갈래 ──────────────────────────────────────────────────────────────

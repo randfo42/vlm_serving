@@ -25,12 +25,17 @@ VLM 에게 묻는 것은 walk 와 완전히 같다: "이 장면이 산책로인�
 쓰는데, 갈림길 반대편에서 어차피 다른 pano 들로 이어지므로 얻는 것이
 적다. visited 에는 "큐에 들어간 것" 과 "아니라고 판정된 것" 이 함께 든다.
 
-### walk 와 달리 miss 를 참지 않는다
+### "아님" 판정도 확장한다 (2026-08-18 결정)
 
-walk 는 그늘 한 장 때문에 길을 포기하지 않으려고 miss_tolerance 만큼
-밀어본다. 여기서는 안 한다 — 갈래마다 밀어붙이면 오판 하나가 가짜 가지
-하나를 통째로 만들고, 호출 예산이 그리로 샌다. 한 방향의 오판은 그 갈래
-하나가 일찍 끝나는 것으로 값을 치른다.
+처음엔 산책로로 판정된 갈래만 확장했는데, 그러면 차도 pano 에서 시작하는
+순간 모든 방향이 "아님" 이라 탐색이 2호출 만에 죽는다 — 실측으로 확인됐고,
+웹 UI 유저는 길가를 찍기 마련이다. 그래서 판정과 무관하게 depth 한계
+안에서는 계속 간다. 차도를 다리 삼아 건너면 하천 램프가 나온다.
+
+폭주는 예산이 막는다: max_depth 가 반경을, max_vlm_calls 가 총량을 자른다.
+다만 호출이 차도 격자에 새지 않게 큐를 둘로 나눈다 — **산책로 갈래 큐를
+먼저 비우고**, 아님 갈래는 그다음이다. 예산은 산책로를 따라가는 데 먼저
+쓰이고, 남으면 다리(차도)를 건너 보는 데 쓰인다.
 """
 import time
 from collections import deque
@@ -52,6 +57,9 @@ class ExploreConfig:
 
     # ── 판정 ──────────────────────────────────────────────────────────
     fov_deg: float = 90.0         # 캡처 화각. walk 와 같은 값이어야 판정 기준이 비교 가능하다
+    expand_non_trail: bool = True # "아님" 판정도 확장할 것인가. True 면 차도에서 시작해도
+                                  # 건너편 산책로를 찾는다 (depth·호출 예산이 폭주를 막는다).
+                                  # False 는 산책로 갈래만 따라가는 예전 방식 — 호출이 절약된다
 
     # ── 후보 ──────────────────────────────────────────────────────────
     max_candidates: int = 4       # 한 노드에서 최대 몇 방향까지 물어볼지 (그래프 이웃 상한)
@@ -88,6 +96,7 @@ class _Node:
     came_from: str | None          # 부모 pano_id
     pano: Pano | None = None       # 그래프 자식은 pano 를 이미 안다
     pos: tuple[float, float] | None = None   # 폴백 자식은 좌표만 안다. 꺼낼 때 스냅한다
+    is_trail: bool | None = None   # 이 노드를 발견한 판정. 시작 노드만 None (판정 전)
 
 
 def explore(provider, client, start: tuple[float, float], start_bearing: float = 0.0,
@@ -140,18 +149,24 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
         res.wall_s = time.time() - t0
         return res
 
-    queue: deque[_Node] = deque(
+    # 큐가 둘이다: 산책로 갈래를 먼저 비우고, "아님" 갈래(다리)는 그다음.
+    # 예산이 산책로를 따라가는 데 먼저 쓰이게 하는 유일한 장치다
+    q_trail: deque[_Node] = deque(
         [_Node(depth=0, bearing=geo.norm_deg(start_bearing), came_from=None, pano=start_pano)])
+    q_miss: deque[_Node] = deque()
     # 큐에 들어갔거나 "아니오" 판정을 받은 pano. 어느 쪽이든 다시 묻지 않는다
     visited: set[str] = {start_pano.pano_id}
 
-    while queue:
+    def drain() -> list[dict]:
+        return [leftover(n, res.stop_reason) for n in (*q_trail, *q_miss)]
+
+    while q_trail or q_miss:
         if time.time() - t0 > cfg.max_seconds:
             res.stop_reason = "time_budget"
-            res.frontier += [leftover(n, "time_budget") for n in queue]
+            res.frontier += drain()
             break
 
-        node = queue.popleft()
+        node = (q_trail or q_miss).popleft()
 
         # 폴백 자식은 좌표만 들고 온다 — 여기서 스냅한다
         if node.pano is None:
@@ -175,7 +190,7 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
 
         res.nodes.append({"pano_id": node.pano.pano_id, "lat": node.pano.lat,
                           "lng": node.pano.lng, "depth": node.depth,
-                          "parent": node.came_from})
+                          "parent": node.came_from, "is_trail": node.is_trail})
 
         if node.depth >= cfg.max_depth:
             # 마킹은 하되 확장하지 않는다. 저 너머는 안 본 것이지 없는 것이 아니다
@@ -232,21 +247,19 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
             if nb is not None:
                 # 첫 접근의 판정이 그 pano 의 판정이다 — 참이든 거짓이든 다시 묻지 않는다
                 visited.add(nb.pano_id)
-            if not ok:
+            if not ok and not cfg.expand_non_trail:
                 continue
 
+            child = _Node(depth=node.depth + 1, bearing=hdg,
+                          came_from=node.pano.pano_id, is_trail=ok)
             if nb is not None:
-                queue.append(_Node(depth=node.depth + 1, bearing=hdg,
-                                   came_from=node.pano.pano_id,
-                                   pano=Pano(pano_id=nb.pano_id, lat=nb.lat, lng=nb.lng)))
+                child.pano = Pano(pano_id=nb.pano_id, lat=nb.lat, lng=nb.lng)
             else:
-                queue.append(_Node(depth=node.depth + 1, bearing=hdg,
-                                   came_from=node.pano.pano_id,
-                                   pos=geo.destination((node.pano.lat, node.pano.lng),
-                                                       hdg, cfg.step_m)))
+                child.pos = geo.destination((node.pano.lat, node.pano.lng), hdg, cfg.step_m)
+            (q_trail if ok else q_miss).append(child)
 
         if budget_hit:
-            res.frontier += [leftover(n, res.stop_reason) for n in queue]
+            res.frontier += drain()
             break
 
     if not res.stop_reason:
