@@ -52,6 +52,10 @@ class ProviderError(RuntimeError):
 
 @runtime_checkable
 class RoadviewProvider(Protocol):
+    # 프로토콜 본문에는 메서드만 둔다 (데이터 멤버는 runtime_checkable 과 안 맞는다).
+    # 관례 속성: `uses_graph: bool` — 이웃 그래프가 실재하는 provider 인가.
+    # True 면 neighbors() 의 빈 목록은 "갈래 없음" 이 아니라 로드 실패로 읽어야
+    # 한다 (kakao=True, fixture=False). 호출자는 getattr(p, "uses_graph", False).
     name: str
 
     def nearest(self, lat: float, lng: float, radius_m: float) -> Pano | None:

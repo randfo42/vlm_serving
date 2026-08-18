@@ -23,6 +23,7 @@ _M_PER_DEG_LAT = 111_320.0
 
 class FixtureProvider:
     name = "fixture"
+    uses_graph = False     # 그래프가 원래 없다. 좌표 밀기가 정상 경로다
 
     def __init__(self, image_dir: Path | str):
         self.dir = Path(image_dir)

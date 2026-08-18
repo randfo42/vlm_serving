@@ -227,6 +227,10 @@ class _Handler(BaseHTTPRequestHandler):
 
 class KakaoProvider:
     name = "kakao"
+    # 이웃 그래프가 실재하는 provider 다. neighbors() 가 빈 목록을 주면 그것은
+    # "갈래가 없다" 가 아니라 **로드 실패**다 — explore 는 이 플래그를 보고
+    # 좌표 밀기(추측)로 새지 않는다.
+    uses_graph = True
 
     def __init__(self, appkey: str, *, host: str = "127.0.0.1", port: int = 8731,
                  headless: bool = True, hide_arrows: bool = False):
@@ -329,10 +333,23 @@ class KakaoProvider:
     def neighbors(self, pano: Pano) -> list[Neighbor]:
         """이 pano 의 인접 pano 들. 화면의 흰 화살표와 같은 것이다.
 
-        `capture`/`nearest` 로 pano 를 이미 띄운 뒤에 부른다 — 그때 SDK 가
-        노드 응답을 받아오기 때문이다. 아직 안 왔으면 잠깐 기다린다.
+        SDK 는 **띄운 적이 있는 pano** 의 노드 응답만 받아온다. walk 는 항상
+        현재 pano 를 띄운 채로 물어서 문제가 없었지만, explore 의 BFS 는 큐에서
+        꺼낸 pano 를 아직 안 띄운 채 이웃부터 묻는다 — 그 경우 응답이 영영 안
+        오고, 기다리다 빈 목록을 주면 호출자가 좌표 밀기로 새어 버린다
+        (실측: 청계천 22노드 중 12개). 그래서 없으면 **직접 띄워서** 받아오게
+        한다. 어차피 곧 capture 로 띄울 pano 라 렌더가 앞당겨질 뿐, Kakao 로
+        나가는 요청이 늘지는 않는다.
         """
-        for _ in range(20):             # 최대 2초
+        for _ in range(6):              # 이미 지나간 응답이면 금방 온다
+            if pano.pano_id in self._spots:
+                return self._spots[pano.pano_id]
+            self._page.wait_for_timeout(100)
+        try:
+            self._page.evaluate("([p]) => window.__show(p, 0)", [pano.pano_id])
+        except Exception:
+            return []                   # 렌더 실패는 capture 가 다시 만나 제대로 터뜨린다
+        for _ in range(25):             # 최대 2.5초
             if pano.pano_id in self._spots:
                 return self._spots[pano.pano_id]
             self._page.wait_for_timeout(100)
