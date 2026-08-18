@@ -161,6 +161,34 @@ def test_산책로_갈래_큐를_먼저_비운다():
     assert p.probes[2][0] == "A"
 
 
+# ── 그래프 provider 의 이웃 로드 실패 ──────────────────────────────────────
+
+def test_그래프_provider는_이웃을_못얻어도_좌표밀기로_새지_않는다():
+    """2026-08-18 청계천 실주행(차도 시작, 50호출)에서 노드 22개 중 12개가
+    이웃 로드에 실패해 호출 34/50 이 좌표 밀기로 샜다. 이웃이 실재하는
+    provider(uses_graph)에서 빈 목록은 "갈래 없음" 이 아니라 렌더/스니핑
+    실패다 — 추측 방위로 걷지 않고 neighbors_missing 으로 남긴다."""
+    # pano id 는 그 실주행에서 실제로 폴백에 빠졌던 것들이다
+    p = Provider({"1212370258": [nb("1039598393", 33.0)],
+                  "1039598393": []},                    # ← 이웃 로드 실패
+                 start=("1212370258", 37.5695, 127.005))
+    p.uses_graph = True
+    res = run(p, {("1212370258", 33.0): True})
+    assert p.nearest_calls == 1, "좌표 밀기 스냅이 돌았다"
+    assert all(pr["to_pano"] is not None for pr in res.probes), "추측 방위를 물었다"
+    assert [(f["pano_id"], f["reason"]) for f in res.frontier] == \
+        [("1039598393", "neighbors_missing")]
+
+
+def test_uses_graph가_아니면_빈_이웃은_정상_폴백이다():
+    """fixture 처럼 그래프가 원래 없는 provider 는 좌표 밀기가 정상 경로다."""
+    p = Provider({})
+    res = run(p, {}, max_vlm_calls=4)
+    assert res.used_graph is False
+    assert all(pr["to_pano"] is None for pr in res.probes)
+    assert not any(f["reason"] == "neighbors_missing" for f in res.frontier)
+
+
 # ── 폴백 갈래 ──────────────────────────────────────────────────────────────
 
 def test_갈래의_no_coverage는_탐색_전체를_멈추지_않는다():

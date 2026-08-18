@@ -200,6 +200,14 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
         # ── 후보 생성. walk 와 같은 코드 경로 — 판정 조건이 갈라지지 않게 ──
         cands, graph = _candidates(provider, node.pano, node.bearing,
                                    node.came_from, visited, cfg)
+        if not graph and getattr(provider, "uses_graph", False):
+            # 이웃이 실재하는 provider 에서 목록을 못 얻었다 — 갈래가 없는 게
+            # 아니라 렌더/스니핑 실패다. 추측(좌표 밀기)으로 걸으면 없는 길을
+            # 만들어내므로 여기서 접고, "안 본 곳" 으로 frontier 에 남긴다
+            if log:
+                log.event("neighbors_missing", step=node.depth, pano_id=node.pano.pano_id)
+            res.frontier.append(leftover(node, "neighbors_missing"))
+            continue
         if node.came_from is None and not graph:
             # 폴백의 시작 노드: 진행 방향이라는 개념이 아직 없다. 전방향을 본다
             cands = [(geo.norm_deg(start_bearing + o), None) for o in cfg.start_offsets]
