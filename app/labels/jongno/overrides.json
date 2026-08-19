@@ -1,0 +1,7 @@
+{
+  "jongno-01/가온다리(구름다리)": {"skip": true, "note": "POI 검색 불가 (인왕산숲길 구름다리). 좌표를 알면 lat/lng 로 교체할 것 — skip 이면 해맞이동산→이빨바위(도 skip이라 청운공원) 구간을 길찾기가 직접 잇는다"},
+  "jongno-01/이빨바위": {"skip": true, "note": "POI 검색 불가 (바위 지형지물)"},
+  "jongno-02/인왕산호랑이상": {"skip": true, "note": "POI 검색 불가 (조형물)"},
+  "jongno-04/가회배수지": {"skip": true, "note": "POI 검색 불가 (시설물). 삼청공원 순환로의 중간점"},
+  "jongno-06/자하슈퍼": {"skip": true, "note": "POI 검색 불가 (부암동 소매점)"}
+}

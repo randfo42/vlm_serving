@@ -143,3 +143,35 @@ python app/labels/fetch_gil_seoul.py --detail   # 경유지까지 (~3분)
 
 파서는 페이지 구조 변경에 대비해 필드 누락 건수를 마지막에 찍는다.
 `⚠ ... 누락 N건` 이 뜨면 사이트가 바뀐 것이니 파서를 먼저 고칠 것.
+
+---
+
+## 7. 2026-08-19 — 종로구 파일럿으로 §3 이 뚫렸다 (제4의 길)
+
+§3 의 세 갈래 대신 사용자가 정한 네 번째 길로 진행했다:
+**자치구 페이지의 텍스트 경유지 → 지오코딩 → 카카오맵 웹 도보 길찾기**
+(엔드포인트 관찰 기록은 `24-course-routes.md`).
+
+```
+labels/fetch_jongno.py        종로 걷기코스 9개, 경유지 59개    → jongno/courses.json
+labels/geocode_waypoints.py   54 지오코딩 + 5 skip(비 POI)     → jongno/waypoints.json
+labels/fetch_walk_routes.py   45/45 구간 폴리라인               → jongno/courses_geom.json
+labels/make_samples.py        리샘플→pano 캡처, true/false 자동 라벨 → jongno/samples.jsonl
+labels/apply_review.py        사람 검수(파일 이동) 반영          → jongno/labels.jsonl
+run_eval.py                   VLM eval (재개 가능)              → runs/*-eval.jsonl
+eval/report_eval.py           정확도·혼동행렬·소스별 슬라이스·ROC 점
+```
+
+### 한계 두 가지 (검수가 반드시 필요한 이유)
+
+1. **suspect 코스 3개 제외** — 도보 라우터가 산길·성곽길을 못 타고 도로로
+   우회한다. 라우팅 길이가 공식 거리의 1.6배를 넘으면(흥인지문~혜화문 2.0x,
+   삼청공원 2.2x, 화정박물관~서울예고 3.1x) 그 폴리라인 위 점은 산책로가
+   아니라 인도라서 기본 제외한다.
+2. **비율이 정상인 코스도 폴리라인이 차도를 탈 수 있다** — 청계천길은 라우팅이
+   하천 산책로가 아니라 위쪽 청계천로(차도·인도)를 타서, positive 로 캡처된
+   이미지 상당수가 실은 차도 장면이다 (눈으로 확인). **자동 라벨은 검수 전
+   가설이다** — pos/ 폴더의 차도 장면을 neg/ 로 옮기는 것까지가 라벨링이다.
+
+§4 의 형태1(점 단위)이 이것으로 성립한다. 형태2(경로 커버리지)는 여전히
+스마트서울맵 폴리라인(§3a)이 필요하다 — 150개 코스 전체로 확장할 때 다시 본다.

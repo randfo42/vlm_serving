@@ -38,6 +38,7 @@
 | `21-roadview-providers.md` | Kakao/Naver/Google 로드뷰 API 조사. **문서 기반, 실측 아님** |
 | `22-labels.md` | 서울 테마산책길 150개소 수집 결과, 좌표가 없는 문제, 평가 설계 |
 | `23-open-questions.md` | 블로커와 미결정 항목 |
+| `24-course-routes.md` | 도보 길찾기 엔드포인트 관찰 기록. 폴리라인의 출처와 한계 |
 
 ---
 
