@@ -182,16 +182,17 @@ def test_load_labels_excludes_discarded(tmp_path):
     assert [s["sample_id"] for s in mod.load_labels(p)] == ["a", "c"]
 
 
-def test_resume_conflict_detects_prompt_and_labels_change():
+def test_resume_conflict_detects_prompt_labels_url_change():
     mod = _load_run_eval()
-    old = {"prompt": {"system_sha256": "aaa"}, "labels_sha256": "L1"}
-    same = {"prompt": {"system_sha256": "aaa"}, "labels_sha256": "L1"}
-    other_prompt = {"prompt": {"system_sha256": "bbb"}, "labels_sha256": "L1"}
-    other_labels = {"prompt": {"system_sha256": "aaa"}, "labels_sha256": "L2"}
+    old = {"prompt": {"system_sha256": "aaa"}, "labels_sha256": "L1", "url": "u1"}
+    same = dict(old)
     assert mod.resume_conflict(old, same) is None
     assert mod.resume_conflict(None, same) is None          # 새 파일 — 재개 아님
-    assert "prompt" in mod.resume_conflict(old, other_prompt)
-    assert "labels" in mod.resume_conflict(old, other_labels)
+    assert "prompt" in mod.resume_conflict(
+        old, {**old, "prompt": {"system_sha256": "bbb"}})
+    assert "labels" in mod.resume_conflict(old, {**old, "labels_sha256": "L2"})
+    # 다른 서버(url)의 probe 를 한 파일에 합산하지 않는다
+    assert "url" in mod.resume_conflict(old, {**old, "url": "u2"})
 
 
 def test_resume_header_reads_first_line(tmp_path):

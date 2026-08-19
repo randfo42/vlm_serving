@@ -67,7 +67,11 @@ def resume_conflict(old: dict | None, new: dict) -> str | None:
         return None
     for what, get in (
             ("prompt", lambda h: (h.get("prompt") or {}).get("system_sha256")),
-            ("labels", lambda h: h.get("labels_sha256"))):
+            ("labels", lambda h: h.get("labels_sha256")),
+            # url 은 "어느 서버였나"의 근사다. 포트만 바뀌어도 막히지만,
+            # 막힘의 비용은 새 out 경로 하나다 — 다른 모델의 probe 가
+            # 한 accuracy 로 합산되는 쪽보다 싸다 (리뷰 지적).
+            ("url", lambda h: h.get("url"))):
         a, b = get(old), get(new)
         if a != b:
             return (f"기존 out 의 {what} 지문이 현재 설정과 다르다\n"
