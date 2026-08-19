@@ -92,6 +92,26 @@ def test_끝내_안_멎으면_기록을_남긴다():
     assert p._unsettled == 1
 
 
+def test_안정화_실패는_이벤트로도_나간다():
+    """카운터만 있던 시절엔 아무도 안 읽었다 — 실측 사고(반쯤 로드된 프레임이
+    판정을 뒤집음)가 재발해도 런로그가 정상으로 보였다. 런 스크립트가
+    on_event 에 RunLog.event 를 꽂으면 probe 옆에 시간순으로 남는다."""
+    events = []
+    page = FakePage([str(i) for i in range(50)])
+    p = provider(page)
+    p.on_event = lambda kind, **kw: events.append((kind, kw))
+    p._settle("PANO1")
+    assert ("render_unsettled", {"pano_id": "PANO1"}) in events
+
+
+def test_on_event_가_없으면_카운터만_남는다():
+    """테스트·스크립트 밖 사용에서 배선이 없어도 죽으면 안 된다."""
+    page = FakePage([str(i) for i in range(50)])
+    p = provider(page)
+    p._settle("PANO1")            # on_event 는 클래스 기본값 None
+    assert p._unsettled == 1
+
+
 def test_무한정_기다리지_않는다():
     page = FakePage([str(i) for i in range(50)])
     provider(page)._settle()
@@ -117,12 +137,17 @@ def test_타일이_도는_동안_기다린다():
 
 
 def test_타일이_끝내_안_끊겨도_포기한다(monkeypatch):
-    """Kakao 가 계속 뭔가를 받아오는 상황에서 런이 멈추면 안 된다."""
+    """Kakao 가 계속 뭔가를 받아오는 상황에서 런이 멈추면 안 된다.
+    다만 조용히는 아니다 — 카운터와 이벤트로 남는다."""
     monkeypatch.setattr(kakao, "TILE_WAIT_MAX_MS", 60)
+    events = []
     page = FakePage(["A"])
     p = provider(page)
+    p.on_event = lambda kind, **kw: events.append(kind)
     p._inflight = 1               # 영원히 안 끝난다
-    p._await_tiles()              # 그래도 돌아와야 한다
+    p._settle("PANO1")            # 그래도 돌아와야 한다
+    assert p._tile_timeouts == 1
+    assert "tiles_timeout" in events
 
 
 def test_타일_추적은_이미지_요청만_센다():
@@ -187,6 +212,53 @@ def test_렌더_실패는_ProviderError로_나간다():
     page.evaluate = boom
     with pytest.raises(kakao.ProviderError):
         provider(page).capture(Pano(pano_id="X", lat=0, lng=0), 90.0)
+
+
+# ── 이웃 응답 파싱 실패 ─────────────────────────────────────────────────────
+
+class FakeResp:
+    url = kakao.NODE_API_MARK
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+def test_노드_응답_형식이_바뀌면_neighbors_가_터진다():
+    """조용히 버리면 실재하는 갈래가 그래프에서 증발한 채 탐색이 계속 돈다 —
+    spot 하나의 필드 결손도 형식 변경으로 취급해 시끄럽게 죽는다."""
+    p = provider(FakePage(["A"]))
+    p._spots = {}
+    p._sniff_node(FakeResp({"street_view": {"street": {
+        "id": "1", "spot": [{"id": "2"}]}}}))          # pan/wgsx/wgsy 없음
+    with pytest.raises(kakao.ProviderError):
+        p.neighbors(Pano(pano_id="1", lat=0, lng=0))
+
+
+def test_정상_노드_응답은_이웃이_된다():
+    p = provider(FakePage(["A"]))
+    p._spots = {}
+    p._sniff_node(FakeResp({"street_view": {"street": {
+        "id": "1", "spot": [{"id": "2", "pan": 91.4, "wgsy": 37.5, "wgsx": 127.0,
+                             "st_name": "청계천로"}]}}}))
+    nbrs = p.neighbors(Pano(pano_id="1", lat=0, lng=0))
+    assert [(n.pano_id, n.heading) for n in nbrs] == [("2", 91.4)]
+
+
+def test_노드_아닌_응답은_무시한다():
+    p = provider(FakePage(["A"]))
+    p._spots = {}
+
+    class Other:
+        url = "https://example.com/other"
+
+        def json(self):
+            raise AssertionError("열어보지도 말아야 한다")
+
+    p._sniff_node(Other())
+    assert p._spots == {} and p._sniff_error is None
 
 
 # ── 안정화 상수 ─────────────────────────────────────────────────────────────

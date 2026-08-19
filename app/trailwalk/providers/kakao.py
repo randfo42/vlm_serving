@@ -235,6 +235,12 @@ class _Handler(BaseHTTPRequestHandler):
 
 class KakaoProvider:
     name = "kakao"
+    # 런 스크립트가 RunLog.event 를 꽂는다 (→ run_walk/run_explore). provider 는
+    # 런로그 형식을 모른 채 신호만 쏘고, 안 꽂히면(테스트 등) 카운터만 남는다.
+    on_event = None
+    # 클래스 기본값 — __new__ 로 만드는 테스트 인스턴스에서도 안전하게.
+    _tile_timeouts = 0
+    _sniff_error: str | None = None
 
     def __init__(self, appkey: str, *, host: str = "127.0.0.1", port: int = 8731,
                  headless: bool = True, hide_arrows: bool = False,
@@ -271,6 +277,7 @@ class KakaoProvider:
         # 이웃 목록이 들어 있다 — 우리가 따로 요청하지 않고 지나가는 것을 줍는다.
         self._spots: dict[str, list[Neighbor]] = {}
         self._unsettled = 0        # 프레임이 끝내 안 멎은 캡처 수 (→ capture())
+        self._tile_timeouts = 0    # 타일 요청이 끝내 안 끊긴 캡처 수 (→ _await_tiles)
         self._warmed = False       # 세션 첫 캡처를 버렸는가 (→ capture())
         self._inflight = 0         # 아직 안 끝난 타일 요청 수 (→ _await_tiles)
         self._last_net = 0.0       # 마지막 타일 요청이 끝난 시각
@@ -301,14 +308,21 @@ class KakaoProvider:
             self._inflight = max(0, self._inflight - 1)
             self._last_net = time.monotonic()
 
-    def _await_tiles(self) -> None:
-        """진행 중인 타일 요청이 없고, 그 상태가 잠시 유지될 때까지 기다린다."""
+    def _await_tiles(self) -> bool:
+        """진행 중인 타일 요청이 없고, 그 상태가 잠시 유지될 때까지 기다린다.
+
+        False = 제한 시간 안에 조용해지지 않았다. 그래도 진행은 한다 — Kakao 가
+        계속 뭔가를 받아오는 상황에서 런이 멈추면 안 된다. 다만 신호는 남긴다
+        (→ _settle 이 이벤트로 올린다). 이게 잦으면 상수를 의심할 것.
+        """
         deadline = time.monotonic() + TILE_WAIT_MAX_MS / 1000
         while time.monotonic() < deadline:
             quiet = time.monotonic() - self._last_net
             if self._inflight == 0 and quiet >= TILE_QUIET_MS / 1000:
-                return
+                return True
             self._page.wait_for_timeout(50)   # 이벤트 루프를 돌려 콜백을 받는다
+        self._tile_timeouts += 1
+        return False
 
     # ── 이웃 (인접 pano) ────────────────────────────────────────────────
     def _sniff_node(self, response) -> None:
@@ -319,25 +333,35 @@ class KakaoProvider:
         Kakao 에 나가는 요청 수가 늘지 않는다는 점이 중요하다 —
         문서화되지 않은 내부 API 를 따로 두드리는 것과는 성격이 다르다.
         (그래도 문서화된 계약은 아니다 → docs/23-open-questions.md §7)
+
+        파싱 실패는 조용히 버리지 않는다. 예전에는 형식이 바뀌면 그 응답을
+        (spot 하나가 깨지면 그 이웃 하나를) 말없이 버렸는데, 그러면 실재하는
+        갈래가 그래프에서 증발한 채 탐색이 계속 돈다 — 상위는 "갈래가 3개였다"
+        고 믿는다. 여기는 Playwright 콜백이라 raise 가 밖으로 안 나가므로,
+        표식만 남기고 neighbors() 가 ProviderError 로 터뜨린다.
         """
         if NODE_API_MARK not in response.url:
             return
         try:
             street = (response.json().get("street_view") or {}).get("street") or {}
-        except Exception:
-            return                      # 형식이 바뀌면 조용히 포기한다. 탐색은 계속 돈다
-        pid = str(street.get("id") or "")
-        if not pid:
+            pid = str(street["id"])
+            spots = [Neighbor(pano_id=str(s["id"]), heading=float(s["pan"]),
+                              lat=float(s["wgsy"]), lng=float(s["wgsx"]),
+                              name=s.get("st_name"))
+                     for s in street.get("spot") or []]
+        except Exception as e:
+            self._sniff_error = f"{type(e).__name__}: {e}"
             return
-        out = []
-        for s in street.get("spot") or []:
-            try:
-                out.append(Neighbor(pano_id=str(s["id"]), heading=float(s["pan"]),
-                                    lat=float(s["wgsy"]), lng=float(s["wgsx"]),
-                                    name=s.get("st_name")))
-            except (KeyError, TypeError, ValueError):
-                continue
-        self._spots[pid] = out
+        self._spots[pid] = spots
+
+    def _raise_if_sniff_broken(self) -> None:
+        if self._sniff_error:
+            raise ProviderError(
+                f"이웃 응답 파싱 실패 — 노드 JSON 형식이 바뀐 것으로 보인다: "
+                f"{self._sniff_error}\n"
+                f"  비공개 계약이라 예고 없이 바뀔 수 있다 (docs/23-open-questions.md §7).\n"
+                f"  형식을 확인하고 _sniff_node 를 맞출 것. 조용히 계속 돌면 실재하는\n"
+                f"  갈래가 그래프에서 증발한다 — 그래서 여기서 멈춘다.")
 
     def neighbors(self, pano: Pano) -> list[Neighbor]:
         """이 pano 의 인접 pano 들. 화면의 흰 화살표와 같은 것이다.
@@ -351,14 +375,16 @@ class KakaoProvider:
         나가는 요청이 늘지는 않는다.
         """
         for _ in range(6):              # 이미 지나간 응답이면 금방 온다
+            self._raise_if_sniff_broken()
             if pano.pano_id in self._spots:
                 return self._spots[pano.pano_id]
             self._page.wait_for_timeout(100)
         try:
             self._page.evaluate("([p]) => window.__show(p, 0)", [pano.pano_id])
-        except Exception:
-            return []                   # 렌더 실패는 capture 가 다시 만나 제대로 터뜨린다
+        except Exception as e:
+            raise ProviderError(f"로드뷰 렌더 실패 (pano={pano.pano_id}): {e}") from e
         for _ in range(25):             # 최대 2.5초
+            self._raise_if_sniff_broken()
             if pano.pano_id in self._spots:
                 return self._spots[pano.pano_id]
             self._page.wait_for_timeout(100)
@@ -422,11 +448,16 @@ class KakaoProvider:
         # 으로 런 전체의 재현성을 산다.
         if not self._warmed:
             self._warmed = True
-            self._settle()
-        return self._settle()
+            self._settle(pano.pano_id)
+        return self._settle(pano.pano_id)
 
-    def _settle(self) -> bytes:
-        self._await_tiles()
+    def _emit(self, kind: str, **kw) -> None:
+        if self.on_event:
+            self.on_event(kind, **kw)
+
+    def _settle(self, pano_id: str | None = None) -> bytes:
+        if not self._await_tiles():
+            self._emit("tiles_timeout", pano_id=pano_id)
         prev = self._page.locator("#rv").screenshot(type="png")
         same = 1
         for _ in range(RENDER_SETTLE_TRIES):
@@ -436,9 +467,11 @@ class KakaoProvider:
             prev = cur
             if same >= RENDER_SETTLE_STABLE:
                 return cur
-        # 끝내 안 멎었다. 마지막 프레임을 쓰되 조용히 넘기지는 않는다 —
-        # 이 로그가 잦으면 대기 상수를 올려야 한다는 신호다.
+        # 끝내 안 멎었다. 마지막 프레임을 쓰되 조용히 넘기지는 않는다 — 런로그
+        # 이벤트와 카운터 둘 다에 남긴다. 반쯤 로드된 프레임이 판정을 뒤집은
+        # 전례가 있으므로(→ capture 주석), 이 이벤트가 잦으면 대기 상수를 올릴 것.
         self._unsettled += 1
+        self._emit("render_unsettled", pano_id=pano_id)
         return prev
 
     def close(self) -> None:
