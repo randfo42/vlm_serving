@@ -16,15 +16,24 @@ APP = Path(__file__).resolve().parent.parent
 
 
 def _load_apply(tmp_path: Path):
-    """apply_review 를 임시 디렉터리에 바인딩해서 로드한다."""
+    """apply_review 를 임시 데이터셋에 바인딩해서 로드한다.
+
+    경로는 monkeypatch 가 아니라 DatasetPaths 주입으로 받는다 — 모듈 상수를
+    갈아끼우는 방식은 상수 하나가 늘 때마다 조용히 어긋난다.
+    """
     spec = importlib.util.spec_from_file_location(
         "apply_review", APP / "labels" / "apply_review.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    mod.HERE = tmp_path
-    mod.SAMPLES = tmp_path / "samples.jsonl"
-    mod.IMAGES = tmp_path / "images"
-    mod.OUT = tmp_path / "labels.jsonl"
+    paths = mod.ds.DatasetPaths(
+        name="t", root=tmp_path,
+        courses=tmp_path / "courses.json", waypoints=tmp_path / "waypoints.json",
+        overrides=tmp_path / "overrides.json", routes_dir=tmp_path / "routes",
+        geom=tmp_path / "courses_geom.json", coverage=tmp_path / "coverage.json",
+        samples=tmp_path / "samples.jsonl", images=tmp_path / "images",
+        labels=tmp_path / "labels.jsonl", report=tmp_path / "r.tsv",
+        svg=tmp_path / "svg")
+    mod.main = lambda: mod.run(paths)
     return mod
 
 

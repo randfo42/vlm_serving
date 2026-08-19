@@ -121,12 +121,15 @@ class KakaoSettings:
 @dataclass(frozen=True)
 class SamplingSettings:
     interval_m: float
-    buffer_m: float
-    offroute_max_m: float
+    head_m: float
     snap_radius_m: float
-    offroute_snap_radius_m: float
-    neg_ratio: float
-    grid_m: float
+    max_panos_per_course: int
+    provider_restart_every: int
+
+
+@dataclass(frozen=True)
+class LabelsSettings:
+    dataset: str
 
 
 @dataclass(frozen=True)
@@ -153,6 +156,7 @@ class Settings:
     kakao: KakaoSettings
     fixture: FixtureSettings
     sampling: SamplingSettings
+    labels: LabelsSettings
     eval: EvalSettings
 
 

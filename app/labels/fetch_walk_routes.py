@@ -32,6 +32,7 @@
 단, 좌표 역변환 검증(transcoord 3회)은 캐시 히트와 무관하게 매 실행 나간다 —
 완전 오프라인 실행은 아니다.
 """
+import argparse
 import hashlib
 import json
 import math
@@ -44,14 +45,11 @@ from itertools import pairwise
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from labels import dataset as ds
+
+from trailwalk import settings as settings_mod
 from trailwalk.config import kakao_rest_key
 from trailwalk.geo import haversine_m, polyline_length_m
-
-HERE = Path(__file__).resolve().parent / "jongno"
-COURSES = HERE / "courses.json"
-WAYPOINTS = HERE / "waypoints.json"
-ROUTES_DIR = HERE / "routes"
-OUT = HERE / "courses_geom.json"
 
 WALKSET = "https://map.kakao.com/route/walkset.json"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) trailwalk-labels/1.0",
@@ -199,50 +197,63 @@ def effective_waypoints(course: dict, verbose: bool = False) -> list[dict]:
     return merged
 
 
-def print_keys() -> int:
+def print_keys(paths: ds.DatasetPaths) -> int:
     """수동 트레이스를 넣을 때 필요한 캐시 파일명 목록 (→ 24-course-routes.md §5)."""
-    data = json.loads(WAYPOINTS.read_text(encoding="utf-8"))
+    data = json.loads(paths.waypoints.read_text(encoding="utf-8"))
     for course in data["courses"]:
         cid = course["course_id"]
-        for a, b in pairwise(effective_waypoints(course)):
-            print(f"{cid}  {a['name']} → {b['name']}: routes/{cache_name(cid, a, b)}")
+        for wa, wb in pairwise(effective_waypoints(course)):
+            print(f"{cid}  {wa['name']} → {wb['name']}: "
+                  f"routes/{cache_name(cid, wa, wb)}")
     return 0
 
 
 def main() -> int:
-    if "--keys" in sys.argv[1:]:
-        return print_keys()
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--keys", action="store_true",
+                    help="구간별 캐시 파일명만 출력 (수동 트레이스용)")
+    st = settings_mod.load()
+    ds.add_argument(ap, st)
+    a = ap.parse_args()
+    paths = ds.resolve(a.dataset or st.labels.dataset)
+    if a.keys:
+        return print_keys(paths)
+
     key = kakao_rest_key()
-    data = json.loads(WAYPOINTS.read_text(encoding="utf-8"))
+    data = json.loads(paths.waypoints.read_text(encoding="utf-8"))
     official = {c["course_id"]: c.get("distance_km")
-                for c in json.loads(COURSES.read_text(encoding="utf-8"))["courses"]}
-    ROUTES_DIR.mkdir(parents=True, exist_ok=True)
+                for c in json.loads(paths.courses.read_text(encoding="utf-8"))["courses"]}
+    paths.routes_dir.mkdir(parents=True, exist_ok=True)
 
     out_courses, n_missing, verified = [], 0, False
     for course in data["courses"]:
         cid = course["course_id"]
+        if course.get("status") == "incomplete":
+            # 지오코딩이 완결되지 않은 코스는 라우팅 예산을 쓰지 않는다
+            print(f"{cid} {course['name']}: 건너뜀 (지오코딩 incomplete)")
+            continue
         wps = effective_waypoints(course, verbose=True)
         segments = []
-        for a, b in pairwise(wps):
+        for wa, wb in pairwise(wps):
             # 캐시 키는 구간 인덱스가 아니라 좌표다 — 경유지 병합/skip 으로
             # 인덱스가 밀리면 캐시가 엉뚱한 구간에 붙는다.
-            cache = ROUTES_DIR / cache_name(cid, a, b)
+            cache = paths.routes_dir / cache_name(cid, wa, wb)
             if cache.exists():
                 raw = json.loads(cache.read_text(encoding="utf-8"))
             else:
-                sx, sy = wgs_to_wc(key, a["lat"], a["lng"])
+                sx, sy = wgs_to_wc(key, wa["lat"], wa["lng"])
                 time.sleep(0.15)
-                ex, ey = wgs_to_wc(key, b["lat"], b["lng"])
+                ex, ey = wgs_to_wc(key, wb["lat"], wb["lng"])
                 try:
                     raw = fetch_pair(sx, sy, ex, ey)
                 except Exception as e:
-                    print(f"  {cid} {a['name']}→{b['name']}: 요청 실패 {e}",
+                    print(f"  {cid} {wa['name']}→{wb['name']}: 요청 실패 {e}",
                           file=sys.stderr)
                     raw = {"_error": str(e)}
                 cache.write_text(json.dumps(raw, ensure_ascii=False),
                                  encoding="utf-8")
                 time.sleep(DELAY_S)
-            seg = {"from": a["name"], "to": b["name"], "cache": cache.name}
+            seg = {"from": wa["name"], "to": wb["name"], "cache": cache.name}
             try:
                 wc_pts, length_m, time_s = parse_walkset(raw)
             except (KeyError, ValueError, IndexError) as e:
@@ -263,7 +274,7 @@ def main() -> int:
             calc = polyline_length_m(poly)
             if length_m > 0 and abs(calc - length_m) / length_m > 0.15:
                 seg |= {"length_recalc_m": round(calc), "warn_length": True}
-                print(f"  경고 {cid} {a['name']}→{b['name']}: 응답 length "
+                print(f"  경고 {cid} {wa['name']}→{wb['name']}: 응답 length "
                       f"{length_m}m vs 재계산 {calc:.0f}m", file=sys.stderr)
             segments.append(seg)
         total = sum(s.get("length_m", 0) for s in segments)
@@ -279,12 +290,13 @@ def main() -> int:
                             "official_km": km, "ratio": ratio,
                             "suspect": suspect})
 
-    OUT.write_text(json.dumps({
+    paths.geom.write_text(json.dumps({
         "generated_at": datetime.now(UTC).astimezone().isoformat(timespec="seconds"),
         "crs": "WGS84", "endpoint_doc": "app/docs/24-course-routes.md",
+        "dataset": paths.name,
         "courses": out_courses,
     }, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(f"\nwrote {OUT}")
+    print(f"\nwrote {paths.geom}")
     if n_missing:
         print(f"실패 구간 {n_missing}개 — courses_geom.json 의 status=missing. "
               f"수동 트레이스는 routes/ 에 source=manual 로 넣는다", file=sys.stderr)

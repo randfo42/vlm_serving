@@ -25,6 +25,7 @@ Kakao 로컬 키워드 검색으로 경유지 이름을 좌표로 바꾼다.
 결과의 모든 항목에 check_url(카카오맵 링크)이 붙는다 — **전 건을 눌러서
 눈으로 확인하는 것**이 이 단계의 통과 조건이다.
 """
+import argparse
 import json
 import re
 import sys
@@ -32,20 +33,52 @@ import time
 import urllib.parse
 import urllib.request
 from datetime import UTC, datetime
+from itertools import pairwise
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from labels import dataset as ds
+
+from trailwalk import settings as settings_mod
 from trailwalk.config import kakao_rest_key
 from trailwalk.geo import haversine_m
 
-HERE = Path(__file__).resolve().parent / "jongno"
-COURSES = HERE / "courses.json"
-OVERRIDES = HERE / "overrides.json"
-OUT = HERE / "waypoints.json"
-
 SEARCH = "https://dapi.kakao.com/v2/local/search/keyword.json"
-JONGNO_CENTER = (37.573050, 126.978980)   # 종로구청
+SEOUL_CENTER = (37.566535, 126.977969)    # 서울시청 — 구청 좌표를 모를 때의 시드
 MAX_GAP_M = 2000.0
+
+
+_GU_CACHE: dict[str, tuple[float, float]] = {}
+
+
+def gu_center(key: str, gu: str | None) -> tuple[float, float]:
+    """자치구 중심(구청) 좌표. 첫 경유지의 검색 바이어스로 쓴다.
+
+    150개 코스가 서울 전역에 흩어져 있어 고정 중심(시청)으로는 외곽 자치구의
+    첫 경유지가 반경 밖으로 밀린다. 구 이름은 대장에 이미 있다.
+    """
+    if not gu:
+        return SEOUL_CENTER
+    first = gu.split(",")[0].strip()
+    if first in _GU_CACHE:
+        return _GU_CACHE[first]
+    try:
+        docs = _query(key, {"query": f"{first}청", "size": 1})
+        if docs:
+            _GU_CACHE[first] = (float(docs[0]["y"]), float(docs[0]["x"]))
+        else:
+            _GU_CACHE[first] = SEOUL_CENTER
+    except Exception:
+        _GU_CACHE[first] = SEOUL_CENTER
+    time.sleep(0.15)
+    return _GU_CACHE[first]
+
+
+def gu_of(doc: dict) -> str:
+    """검색 결과의 자치구명. address_name 은 "서울 강남구 …" 꼴이다."""
+    addr = doc.get("address_name") or doc.get("road_address_name") or ""
+    m = re.search(r"([가-힣]+[구시군])", addr)
+    return m.group(1) if m else ""
 
 
 def _query(key: str, params: dict) -> list[dict]:
@@ -106,7 +139,7 @@ def _score(query: str, doc: dict) -> int:
 
 
 def search(key: str, name: str, near: tuple[float, float], cap_m: float,
-           ) -> tuple[dict, str, bool] | None:
+           seed: tuple[float, float]) -> tuple[dict, str, bool] | None:
     """경유지명 하나를 푼다. 반환: (문서, 쓰인 질의, 약한 매칭 여부) 또는 None.
 
     변형 질의마다 거리 바이어스 검색과 정확도 검색을 다 모아, (덜 변형된 질의,
@@ -127,8 +160,8 @@ def search(key: str, name: str, near: tuple[float, float], cap_m: float,
         docs = _query(key, {"query": q, "x": f"{near[1]:.7f}", "y": f"{near[0]:.7f}",
                             "radius": 5000, "sort": "distance", "size": 5})
         time.sleep(0.15)
-        docs += _query(key, {"query": q, "x": f"{JONGNO_CENTER[1]:.7f}",
-                             "y": f"{JONGNO_CENTER[0]:.7f}", "radius": 8000,
+        docs += _query(key, {"query": q, "x": f"{seed[1]:.7f}",
+                             "y": f"{seed[0]:.7f}", "radius": 8000,
                              "sort": "accuracy", "size": 5})
         time.sleep(0.15)
         for doc in docs:
@@ -153,15 +186,23 @@ def search(key: str, name: str, near: tuple[float, float], cap_m: float,
 
 
 def main() -> int:
-    key = kakao_rest_key()
-    data = json.loads(COURSES.read_text(encoding="utf-8"))
-    overrides = json.loads(OVERRIDES.read_text(encoding="utf-8")) \
-        if OVERRIDES.exists() else {}
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    st = settings_mod.load()
+    ds.add_argument(ap, st)
+    a = ap.parse_args()
+    paths = ds.resolve(a.dataset or st.labels.dataset)
 
-    out_courses, n_missing, n_warn = [], 0, 0
+    key = kakao_rest_key()
+    data = json.loads(paths.courses.read_text(encoding="utf-8"))
+    overrides = json.loads(paths.overrides.read_text(encoding="utf-8")) \
+        if paths.overrides.exists() else {}
+
+    out_courses, n_missing, n_warn, n_incomplete = [], 0, 0, 0
     for course in data["courses"]:
         cid = course["course_id"]
         cap_m = max(2500.0, (course.get("distance_km") or 0) * 1000)
+        gu = course.get("gu")
+        seed = gu_center(key, gu)
         prev: tuple[float, float] | None = None
         rows = []
         for name in course["waypoints"]:
@@ -175,8 +216,8 @@ def main() -> int:
             else:
                 # 첫 경유지의 바이어스는 구청이라 코스 전장 상한이 안 맞는다
                 # (평창동 코스는 구청에서 5km). 구 반경으로 느슨하게 잡는다.
-                hit = search(key, name, prev or JONGNO_CENTER,
-                             cap_m if prev is not None else 10_000.0)
+                hit = search(key, name, prev or seed,
+                             cap_m if prev is not None else 10_000.0, seed)
                 if hit is None:
                     row["status"] = "missing"
                     n_missing += 1
@@ -190,6 +231,13 @@ def main() -> int:
                 if weak:
                     row["match"] = "weak"
                     n_warn += 1
+                # 자치구 대조 — 종로에서 "구름다리"가 9km 밖 동명 다리에 정확
+                # 일치로 잡혔던 사고를 거리 상한보다 직접적으로 잡는다.
+                # 여러 구에 걸친 코스("마포구,용산구")와 서울 밖은 통과시킨다.
+                found = gu_of(doc)
+                if gu and found and found not in {g.strip() for g in gu.split(",")}:
+                    row["gu_found"] = found
+                    n_warn += 1
             if prev is not None:
                 gap = haversine_m(prev, (row["lat"], row["lng"]))
                 if gap > MAX_GAP_M:
@@ -200,7 +248,21 @@ def main() -> int:
                                 + f",{row['lat']},{row['lng']}")
             prev = (row["lat"], row["lng"])
             rows.append(row)
+        # 코스 단위 격리: missing 이 있는 코스만 incomplete 로 빼고 나머지는
+        # 진행한다. 900경유지 규모에서 한 건 실패가 전체를 막으면 안 된다.
+        n_ok = sum(1 for r in rows if r["status"] != "missing")
+        status = "ok" if n_ok == len(rows) and n_ok >= 2 else "incomplete"
+        if status == "incomplete":
+            n_incomplete += 1
+        # 경유지 직선 연결 길이 / 공식 거리 — 코스당 스칼라 하나로 훑는다
+        pts = [(r["lat"], r["lng"]) for r in rows if r["status"] != "missing"]
+        chain_m = sum(haversine_m(x, y) for x, y in pairwise(pts))
+        km = course.get("distance_km") or 0
         out_courses.append({"course_id": cid, "name": course["name"],
+                            "gu": gu, "theme": course.get("theme"),
+                            "status": status,
+                            "chain_m": round(chain_m),
+                            "chain_ratio": round(chain_m / (km * 1000), 2) if km else None,
                             "waypoints": rows})
         marks = " ".join(
             {"geocoded": "·", "override": "o", "missing": "X"}[r["status"]]
@@ -208,12 +270,23 @@ def main() -> int:
             + ("!" if "warn_gap_m" in r else "") for r in rows)
         print(f"{cid} {course['name']}: {marks}")
 
-    OUT.write_text(json.dumps({
+    paths.report.write_text(
+        "course_id\tname\tgu\ttheme\tstatus\tn_wp\tmissing\tweak\tgu_mismatch\tchain_ratio\n"
+        + "".join(
+            f"{c['course_id']}\t{c['name']}\t{c.get('gu') or ''}\t{c.get('theme') or ''}\t"
+            f"{c['status']}\t{len(c['waypoints'])}\t"
+            f"{sum(1 for r in c['waypoints'] if r['status'] == 'missing')}\t"
+            f"{sum(1 for r in c['waypoints'] if r.get('match') == 'weak')}\t"
+            f"{sum(1 for r in c['waypoints'] if r.get('gu_found'))}\t"
+            f"{c['chain_ratio']}\n" for c in out_courses),
+        encoding="utf-8")
+    paths.waypoints.write_text(json.dumps({
         "generated_at": datetime.now(UTC).astimezone().isoformat(timespec="seconds"),
-        "bias": "직전 경유지 (첫 경유지는 종로구청+5km)",
+        "bias": "직전 경유지 (첫 경유지는 자치구청 + 반경 5km)",
+        "dataset": paths.name,
         "courses": out_courses,
     }, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(f"\nwrote {OUT}")
+    print(f"\nwrote {paths.waypoints}\nwrote {paths.report}  (코스별 점검표)")
     if n_warn:
         # 경고(약한 매칭 ?, 장구간 !)는 막지 않는다 — check_url 눈검증 게이트가
         # 잡을 대상 표시다. 개명된 POI(어린이도서관)와 경유지 2개짜리 장코스
@@ -221,9 +294,9 @@ def main() -> int:
         print(f"경고 {n_warn}건 — waypoints.json 의 ?/! 항목의 check_url 을 "
               f"먼저 확인할 것", file=sys.stderr)
     if n_missing:
-        print(f"missing {n_missing} — overrides.json 을 채우고 재실행할 것 "
-              f"(형식은 이 파일 독스트링)", file=sys.stderr)
-        return 1
+        print(f"missing {n_missing} · incomplete 코스 {n_incomplete} — 그 코스는 "
+              f"status=incomplete 로 빠진다. 살리려면 overrides.json 을 채우고 "
+              f"재실행할 것 (형식은 이 파일 독스트링)", file=sys.stderr)
     return 0
 
 

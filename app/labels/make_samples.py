@@ -1,70 +1,90 @@
 #!/usr/bin/env python
-"""폴리라인 → 라벨 샘플 + 로드뷰 이미지. courses_geom.json → samples.jsonl + images/
+"""폴리라인 → 양성 라벨 샘플 + 로드뷰 이미지. courses_geom.json → samples.jsonl
 
-    python app/labels/make_samples.py --dry-run      # 후보 좌표만 (네트워크 없음)
-    python app/labels/make_samples.py                 # 캡처까지 (Playwright + 앱키)
-    python app/labels/make_samples.py --course jongno-01 --course jongno-08
+    python app/labels/make_samples.py --dry-run            # 후보 좌표만 (네트워크 없음)
+    python app/labels/make_samples.py                       # 캡처 (Playwright + 앱키)
+    python app/labels/make_samples.py --dataset jongno --course jongno-01
 
 라벨 파이프라인 3단계 (← fetch_walk_routes.py, → 사람 검수 → apply_review.py).
 
-### 라벨 설계 (자동 라벨 = 검수 전 가설이다)
+### 이 스크립트는 **양성만** 만든다
 
-- p / true  — 폴리라인 50m 리샘플 → pano 스냅. **heading 은 화살표(이웃
-  그래프)의 방위**이고, 코스 진행 방위는 여러 화살표 중 어느 것을 고를지의
-  선택자로만 쓴다. 진행 방위를 그대로 쓰면 경유지가 길 건너 POI 인 지점에서
-  카메라가 옆 건물을 본다 — 실측으로 확인된 사고라 화살표 기준으로 바꿨다.
-  walk 루프가 Neighbor.heading 으로 겨냥하는 것과 같은 기준이다.
-  코스 방위와 채택 화살표의 차는 arrow_diff_deg 로 남긴다 (검수 참고)
-- o / false — positive pano 에서 ±90° 화각. 22-labels.md §5 —
-  좌표가 같아 가장 값싸고 가장 어려운 음성
-- r / false — positive pano 에서 180° 화각. **검수에서 가장 많이 뒤집힐
-  부류다** — 산책로는 뒤로도 이어진다. 태그로 추적한다
-- x / false — 코스 버퍼(150m) 밖 ~1km 내 도로 pano, heading 은 이웃
-  그래프의 방위. 주변 시가지 하드 네거티브
+음성 자동 생성 3종(같은 pano ±90°/180°, 코스 밖 격자)은 2026-08-19 에 폐기됐다.
+라벨 단위가 `(pano, heading)` 이 아니라 **pano** 이기 때문이다 — 산책로 위
+pano 에서 옆을 봐도 카메라는 여전히 산책로 위다. 전체 논거는
+`docs/22-labels.md` §5(폐기 기록). 음성은 두 곳에서만 온다:
+
+  (a) 검수자가 pos/ → neg/ 로 옮긴 것 (사람이 사진을 보고 만든 유일한 라벨)
+  (b) "아예 산책로가 아닌 곳" 별도 수집 — TODO, 이 스크립트의 일이 아니다
+
+### 한 샘플이 만들어지는 방식
+
+1. 코스의 **선두부터 연속된 `ok` 세그먼트**를 이어 붙인다. 중간에 실패 구간이
+   나오면 거기서 끊는다 — 건너뛰고 이으면 없는 경로를 지어내는 것이다.
+2. `interval_m` 간격으로 리샘플하고 **`head_m` 까지만** 쓴다 (코스 앞머리).
+3. 각 점을 `nearest()` 로 실측 pano 에 스냅한다. 스냅이 폴리라인에서
+   `snap_radius_m × 1.5` 를 넘으면 평행한 옆길에 붙은 것이라 버린다.
+4. `neighbors()` 의 화살표 방위 중 **코스 진행 방위에 가장 가까운 것**을
+   heading 으로 쓴다. 화살표가 실측이고 코스 방위는 선택자다 —
+   진행 방위를 그대로 쓰면 경유지가 길 건너 POI 인 지점에서 카메라가 옆
+   건물을 본다(실측 사고). 화살표가 없는 pano 는 버린다(방위를 지어내지 않는다).
+   walk 루프가 `Neighbor.heading` 으로 겨냥하는 것과 같은 기준이다.
 
 suspect 코스(라우팅이 공식 거리의 1.6배 초과 — 도보 라우터가 산책로 대신
-도로로 우회)는 **기본 제외**다. 그 폴리라인 위 점은 산책로가 아니라 인도라서
-true 라벨이 오염된다. --include-suspect 로 강제할 수 있다 (검수 부담 증가).
+도로로 우회)는 **기본 제외**다. `--include-suspect` 로 강제할 수 있다.
 
-offroute 의 heading 은 이웃 그래프(spot)의 방위를 쓴다 — 좌표도 방위도
-지어내지 않는다 (geo.py 원칙). 이웃이 없는 pano 는 버린다.
+### 재개
+
+캡처는 즉시 `samples.jsonl` 에 append 된다. 다시 실행하면 기존 파일의
+pano_id 를 읽어 건너뛴다 — 수 시간짜리 런이 중간에 죽어도 이어서 돈다.
+처음부터 다시 하려면 samples.jsonl 과 images/ 를 지운다.
 """
 import argparse
+import contextlib
 import hashlib
 import json
-import random
 import sys
 import time
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from labels import dataset as ds
+
 from trailwalk import settings as settings_mod
 from trailwalk.geo import angle_diff, norm_deg, point_to_polyline_m, resample_polyline
 
-HERE = Path(__file__).resolve().parent / "jongno"
-GEOM = HERE / "courses_geom.json"
-SAMPLES = HERE / "samples.jsonl"
-IMAGES = HERE / "images"
+
+def head_polyline(course: dict) -> list[tuple[float, float]]:
+    """선두부터 **연속된** ok 세그먼트를 이어 붙인다.
+
+    첫 세그먼트가 실패면 빈 리스트다 — 코스의 시작이 어디인지 알 수 없으므로
+    그 코스는 쓰지 않는다. 중간에 끊기면 거기까지만 쓴다.
+    """
+    pts: list[tuple[float, float]] = []
+    for seg in course["segments"]:
+        if seg["status"] != "ok":
+            break
+        poly = [tuple(p) for p in seg["polyline"]]
+        if pts and poly and pts[-1] == poly[0]:
+            poly = poly[1:]                 # 구간 경계의 중복점
+        pts += poly
+    return pts
 
 
-def load_polylines(geom: dict, include_suspect: bool, only: set[str] | None,
-                   ) -> tuple[dict[str, list[list[tuple[float, float]]]], list[str]]:
-    """코스별 ok 세그먼트 폴리라인. 반환: ({cid: [polyline,...]}, 제외 로그)."""
-    out: dict[str, list[list[tuple[float, float]]]] = {}
-    skipped: list[str] = []
-    for c in geom["courses"]:
-        cid = c["course_id"]
-        if only and cid not in only:
-            continue
-        if c.get("suspect") and not include_suspect:
-            skipped.append(f"{cid} {c['name']} (ratio {c['ratio']}x — 라우팅 우회 의심)")
-            continue
-        polys = [[tuple(p) for p in s["polyline"]]
-                 for s in c["segments"] if s["status"] == "ok"]
-        if polys:
-            out[cid] = polys
-    return out, skipped
+def course_candidates(course: dict, cfg) -> list[tuple[float, float, float]]:
+    """코스 하나의 후보점 [(lat, lng, 코스진행방위), ...]. head_m 까지만."""
+    pts = head_polyline(course)
+    if len(pts) < 2:
+        return []
+    cands = resample_polyline(pts, cfg.interval_m)
+    # 리샘플 점은 0, interval, 2×interval, … 이므로 앞에서 자르면 head_m 컷이다
+    n_head = int(cfg.head_m // cfg.interval_m) + 1
+    cands = cands[:n_head]
+    if cfg.max_panos_per_course > 0:
+        cands = cands[:cfg.max_panos_per_course]
+    return cands
 
 
 def pick_arrow_heading(course_bearing: float,
@@ -78,34 +98,130 @@ def pick_arrow_heading(course_bearing: float,
     return best, angle_diff(best, course_bearing)
 
 
-def positive_candidates(polys: list[list[tuple[float, float]]],
-                        interval_m: float) -> list[tuple[float, float, float]]:
-    cands = []
-    for poly in polys:
-        cands += resample_polyline(poly, interval_m)
-    return cands
+def load_courses(geom: dict, include_suspect: bool, only: set[str] | None,
+                 ) -> tuple[list[dict], list[str]]:
+    """쓸 코스 목록과 제외 사유 로그."""
+    out, skipped = [], []
+    for c in geom["courses"]:
+        cid = c["course_id"]
+        if only and cid not in only:
+            continue
+        if c.get("suspect") and not include_suspect:
+            skipped.append(f"{cid} {c['name']} (ratio {c.get('ratio')}x — 라우팅 우회 의심)")
+            continue
+        if not head_polyline(c):
+            skipped.append(f"{cid} {c['name']} (선두 구간 실패 — 시작점을 알 수 없다)")
+            continue
+        out.append(c)
+    return out, skipped
 
 
-def offroute_candidates(all_polys: list[list[tuple[float, float]]],
-                        cfg) -> list[tuple[float, float]]:
-    """코스 bbox 를 격자로 훑어 버퍼 밖·상한 안의 좌표를 모은다 (pano 스냅 전)."""
-    lats = [p[0] for poly in all_polys for p in poly]
-    lngs = [p[1] for poly in all_polys for p in poly]
-    # 격자 간격을 도 단위로 (위도 1도 ≈ 111.32km, 경도는 cos 보정)
-    dlat = cfg.grid_m / 111_320.0
-    dlng = dlat / 0.793                    # cos(37.57°) ≈ 0.793 — 종로 위도 고정
-    margin = cfg.offroute_max_m / 111_320.0
-    out = []
-    lat = min(lats) - margin
-    while lat <= max(lats) + margin:
-        lng = min(lngs) - margin / 0.793
-        while lng <= max(lngs) + margin / 0.793:
-            d = min(point_to_polyline_m((lat, lng), poly) for poly in all_polys)
-            if cfg.buffer_m < d <= cfg.offroute_max_m:
-                out.append((round(lat, 7), round(lng, 7)))
-            lng += dlng
-        lat += dlat
-    return out
+def resume_state(path: Path) -> tuple[set[str], dict[str, int]]:
+    """기존 samples.jsonl 에서 (이미 찍은 pano_id, 코스별 다음 seq)."""
+    panos: set[str] = set()
+    seq: dict[str, int] = {}
+    if not path.exists():
+        return panos, seq
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        d = json.loads(line)
+        if d.get("type") != "sample":
+            continue
+        panos.add(d["pano_id"])
+        cid = d["course_id"]
+        seq[cid] = max(seq.get(cid, 0), int(d["sample_id"].rsplit("-", 1)[-1][:-1]) + 1)
+    return panos, seq
+
+
+class Collector:
+    """캡처 루프. provider 를 주기적으로 재시작하고 결과를 즉시 흘려보낸다."""
+
+    def __init__(self, make_provider, paths: ds.DatasetPaths, cfg, log_err):
+        self._make = make_provider
+        self.paths = paths
+        self.cfg = cfg
+        self.log_err = log_err
+        self.provider = None
+        self._courses_done = 0
+        self.stats = {"no_pano": 0, "off_polyline": 0, "dup_pano": 0,
+                      "no_neighbor": 0, "capture_fail": 0}
+
+    def _ensure_provider(self) -> None:
+        every = self.cfg.provider_restart_every
+        if self.provider is not None and every > 0 and self._courses_done >= every:
+            self.close()
+            self._courses_done = 0
+        if self.provider is None:
+            self.provider = self._make()
+
+    def close(self) -> None:
+        if self.provider is not None:
+            with contextlib.suppress(Exception):
+                self.provider.close()
+            self.provider = None
+
+    def course(self, course: dict, seen: set[str], start_seq: int) -> Iterator[dict]:
+        """코스 하나를 캡처하며 샘플 행을 하나씩 내놓는다."""
+        cid = course["course_id"]
+        self._ensure_provider()
+        polys = [[tuple(p) for p in s["polyline"]]
+                 for s in course["segments"] if s["status"] == "ok"]
+        cands = course_candidates(course, self.cfg)
+        seq = start_seq
+        for i, (lat, lng, bearing) in enumerate(cands, 1):
+            try:
+                pano = self.provider.nearest(lat, lng, radius_m=self.cfg.snap_radius_m)
+            except Exception as e:
+                self.stats["no_pano"] += 1
+                self.log_err(f"{cid} nearest({lat:.5f},{lng:.5f}): {e}")
+                continue
+            if pano is None:
+                self.stats["no_pano"] += 1
+                continue
+            if pano.pano_id in seen:
+                self.stats["dup_pano"] += 1
+                continue
+            d = min(point_to_polyline_m((pano.lat, pano.lng), poly) for poly in polys)
+            if d > self.cfg.snap_radius_m * 1.5:
+                self.stats["off_polyline"] += 1      # 평행한 옆길에 붙었다
+                continue
+            try:
+                nbrs = self.provider.neighbors(pano)
+            except Exception as e:
+                self.stats["no_neighbor"] += 1
+                self.log_err(f"{cid} neighbors {pano.pano_id}: {e}")
+                continue
+            if not nbrs:
+                self.stats["no_neighbor"] += 1       # 방위를 지어내지 않는다
+                continue
+            arrow, diff = pick_arrow_heading(bearing, [n.heading for n in nbrs])
+            sample_id = f"{cid}-{seq:03d}p"
+            try:
+                png = self.provider.capture(pano, arrow)
+            except Exception as e:
+                self.stats["capture_fail"] += 1
+                self.log_err(f"{cid} capture {pano.pano_id}: {e}")
+                continue
+            name = f"{sample_id}_{pano.pano_id}_{norm_deg(arrow):05.1f}_T.png"
+            (self.paths.images / cid / "pos" / name).write_bytes(png)
+            seen.add(pano.pano_id)
+            seq += 1
+            print(f"\r{cid} {seq}장 ({i}/{len(cands)})", end="", flush=True)
+            yield {
+                "type": "sample", "sample_id": sample_id, "course_id": cid,
+                # 자동 라벨은 검수 전 **가설**이다. 확정은 apply_review 의 final_label.
+                "label": True, "label_source": "route",
+                "pano_id": pano.pano_id, "lat": pano.lat, "lng": pano.lng,
+                "heading": round(norm_deg(arrow), 1),
+                "course_bearing": round(norm_deg(bearing), 1),
+                "arrow_diff_deg": round(diff, 1),
+                "n_arrows": len(nbrs),
+                "dist_to_route_m": round(d, 1),
+                "image": f"{cid}/pos/{name}",
+            }
+        self._courses_done += 1
+        print()
 
 
 def main() -> int:
@@ -117,49 +233,42 @@ def main() -> int:
                     help="라우팅 우회 의심 코스도 포함 (라벨 오염 위험 — 검수 필수)")
     ap.add_argument("--dry-run", action="store_true",
                     help="캡처 없이 후보 좌표만 samples_dry.jsonl 로")
+    st_pre = settings_mod.load()
+    ds.add_argument(ap, st_pre)
     a = ap.parse_args()
 
     st = settings_mod.load(a.config)
     cfg = st.sampling
-    geom = json.loads(GEOM.read_text(encoding="utf-8"))
-    polys_by_course, skipped = load_polylines(
+    paths = ds.resolve(a.dataset or st.labels.dataset)
+    if not paths.geom.exists():
+        print(f"✗ {paths.geom} 이 없다 — fetch_walk_routes.py 를 먼저 돌릴 것",
+              file=sys.stderr)
+        return 2
+
+    geom = json.loads(paths.geom.read_text(encoding="utf-8"))
+    courses, skipped = load_courses(
         geom, a.include_suspect, set(a.course) if a.course else None)
     for msg in skipped:
         print(f"제외: {msg}")
-    if not polys_by_course:
+    if not courses:
         print("남은 코스가 없다", file=sys.stderr)
         return 1
 
-    # 버퍼 판정은 suspect 포함 **전체** 코스 폴리라인 기준이다 — suspect 코스
-    # 주변이 offroute negative 로 뽑히면 그 점이 실제로는 코스 위일 수 있다.
-    all_polys = [[tuple(p) for p in s["polyline"]]
-                 for c in geom["courses"] for s in c["segments"]
-                 if s["status"] == "ok"]
-
-    pos_cands = {cid: positive_candidates(polys, cfg.interval_m)
-                 for cid, polys in polys_by_course.items()}
-    n_pos = sum(len(v) for v in pos_cands.values())
-    off_cands = offroute_candidates(all_polys, cfg)
-    random.Random(42).shuffle(off_cands)   # 결정적 셔플 — 재실행이 같은 순서
-    print(f"positive 후보 {n_pos} (코스 {len(pos_cands)}개) · "
-          f"offroute 격자 후보 {len(off_cands)}")
+    n_cand = sum(len(course_candidates(c, cfg)) for c in courses)
+    print(f"코스 {len(courses)} · 후보점 {n_cand} "
+          f"(간격 {cfg.interval_m:.0f}m · 시작 {cfg.head_m:.0f}m 까지)")
 
     if a.dry_run:
-        out = HERE / "samples_dry.jsonl"
+        out = paths.root / "samples_dry.jsonl"
         with out.open("w", encoding="utf-8") as f:
-            for cid, cands in pos_cands.items():
-                for i, (lat, lng, h) in enumerate(cands):
+            for c in courses:
+                for i, (lat, lng, brg) in enumerate(course_candidates(c, cfg)):
                     f.write(json.dumps({
-                        "type": "sample", "sample_id": f"{cid}-{i:03d}p",
-                        "course_id": cid, "label": True, "label_source": "route",
-                        "lat": lat, "lng": lng, "heading": round(h, 1),
+                        "type": "sample", "sample_id": f"{c['course_id']}-{i:03d}p",
+                        "course_id": c["course_id"], "label": True,
+                        "label_source": "route", "lat": lat, "lng": lng,
+                        "heading": round(brg, 1),
                     }, ensure_ascii=False) + "\n")
-            for i, (lat, lng) in enumerate(off_cands):
-                f.write(json.dumps({
-                    "type": "sample", "sample_id": f"grid-{i:03d}x",
-                    "course_id": "offroute", "label": False,
-                    "label_source": "offroute", "lat": lat, "lng": lng,
-                }, ensure_ascii=False) + "\n")
         print(f"wrote {out} — plot_course.py --samples 로 겹쳐 볼 것")
         return 0
 
@@ -167,162 +276,64 @@ def main() -> int:
     from trailwalk import providers
     from trailwalk.config import kakao_appkey
 
-    provider = providers.make("kakao", settings=st, appkey=kakao_appkey())
-    t0 = time.time()
-    seen_panos: dict[str, str] = {}        # pano_id → sample_id (전역 dedupe)
-    rows: list[dict] = []
-    stats = {"no_pano": 0, "off_polyline": 0, "dup_pano": 0, "no_neighbor": 0}
+    seen, seq_by_course = resume_state(paths.samples)
+    if seen:
+        print(f"재개: 이미 찍은 pano {len(seen)}개는 건너뛴다")
+
     errors: list[str] = []
 
     def log_err(msg: str) -> None:
         errors.append(msg)
         print(f"\n  ! {msg}", file=sys.stderr)
 
-    def save(sample_id: str, cid: str, label: bool, source: str, pano, heading: float,
-             dist_m: float | None, course_bearing: float | None = None,
-             arrow_diff: float | None = None) -> None:
-        sub = "pos" if label else "neg"
-        heading = norm_deg(heading)     # 파일명·대장 둘 다 [0,360). -90 이 그대로
-                                        # 파일명에 들어가 조인 규칙을 깬 적이 있다
-        d = IMAGES / cid / sub
-        d.mkdir(parents=True, exist_ok=True)
-        png = provider.capture(pano, heading)
-        name = f"{sample_id}_{pano.pano_id}_{heading:05.1f}_{'T' if label else 'F'}.png"
-        (d / name).write_bytes(png)
-        rows.append({
-            "type": "sample", "sample_id": sample_id, "course_id": cid,
-            "label": label, "label_source": source,
-            "pano_id": pano.pano_id, "lat": pano.lat, "lng": pano.lng,
-            "heading": round(norm_deg(heading), 1),
-            **({"dist_to_route_m": round(dist_m, 1)} if dist_m is not None else {}),
-            **({"course_bearing": round(norm_deg(course_bearing), 1)}
-               if course_bearing is not None else {}),
-            **({"arrow_diff_deg": round(arrow_diff, 1)} if arrow_diff is not None else {}),
-            "image": f"{cid}/{sub}/{name}",
-        })
+    appkey = kakao_appkey()
+    collector = Collector(
+        lambda: providers.make("kakao", settings=st, appkey=appkey),
+        paths, cfg, log_err)
 
-    try:
-        for cid, cands in pos_cands.items():
-            course_polys = polys_by_course[cid]
-            seq = 0
-            for lat, lng, heading in cands:
-                try:
-                    pano = provider.nearest(lat, lng, radius_m=cfg.snap_radius_m)
-                except Exception as e:
-                    # 오스냅 검출(ProviderError) 등 — 이 후보만 버린다.
-                    # 한 점 때문에 수백 장 캡처 런이 죽으면 안 된다.
-                    stats["no_pano"] += 1
-                    log_err(f"{cid} nearest({lat:.5f},{lng:.5f}): {e}")
-                    continue
-                if pano is None:
-                    stats["no_pano"] += 1
-                    continue
-                if pano.pano_id in seen_panos:
-                    stats["dup_pano"] += 1
-                    continue
-                d = min(point_to_polyline_m((pano.lat, pano.lng), poly)
-                        for poly in course_polys)
-                if d > cfg.snap_radius_m * 1.5:
-                    # 스냅이 폴리라인에서 이만큼 벗어났다 = 평행한 옆길에 붙었다
-                    stats["off_polyline"] += 1
-                    continue
-                try:
-                    nbrs = provider.neighbors(pano)
-                except Exception as e:
-                    stats["no_neighbor"] += 1
-                    log_err(f"{cid} neighbors {pano.pano_id}: {e}")
-                    continue
-                if not nbrs:
-                    # 화살표가 없으면 방위를 지어내지 않는다 — 버린다
-                    stats["no_neighbor"] += 1
-                    continue
-                arrow, diff = pick_arrow_heading(heading, [n.heading for n in nbrs])
-                seen_panos[pano.pano_id] = cid
-                base = f"{cid}-{seq:03d}"
-                try:
-                    save(f"{base}p", cid, True, "route", pano, arrow, d,
-                         course_bearing=heading, arrow_diff=diff)
-                    # 같은 pano 이각 negative: 절반 직교(o, 좌우 교대), 1/4 역방향(r)
-                    if seq % 2 == 0:
-                        save(f"{base}o", cid, False, "orth", pano,
-                             arrow + (90.0 if seq % 4 == 0 else -90.0), d)
-                    if seq % 4 == 1:
-                        save(f"{base}r", cid, False, "rev", pano, arrow + 180.0, d)
-                except Exception as e:
-                    stats["capture_fail"] = stats.get("capture_fail", 0) + 1
-                    log_err(f"{cid} capture {pano.pano_id}: {e}")
-                seq += 1
-                print(f"\r{cid} {seq}/{len(cands)}  경과 {time.time() - t0:.0f}s",
-                      end="", flush=True)
-            print()
-
-        n_pos_done = sum(1 for r in rows if r["label"])
-        n_neg_done = len(rows) - n_pos_done
-        need_off = max(0, round(cfg.neg_ratio * n_pos_done) - n_neg_done)
-        print(f"positive {n_pos_done} · pano 이각 negative {n_neg_done} · "
-              f"offroute 필요 {need_off}")
-        got = 0
-        for lat, lng in off_cands:
-            if got >= need_off:
-                break
-            try:
-                pano = provider.nearest(lat, lng, radius_m=cfg.offroute_snap_radius_m)
-            except Exception as e:
-                # positive 루프와 같은 취급 — 조용히 삼키면 계통적 장애
-                # (레이트리밋 등)가 개수 감소로만 보인다 (리뷰 지적)
-                stats["no_pano"] += 1
-                log_err(f"offroute nearest({lat:.5f},{lng:.5f}): {e}")
-                continue
-            if pano is None or pano.pano_id in seen_panos:
-                continue
-            d = min(point_to_polyline_m((pano.lat, pano.lng), poly)
-                    for poly in all_polys)
-            if not (cfg.buffer_m < d <= cfg.offroute_max_m):
-                continue                    # 스냅으로 버퍼 안에 끌려들어왔다
-            try:
-                nbrs = provider.neighbors(pano)
-                if not nbrs:
-                    stats["no_neighbor"] += 1
-                    continue                # 방위를 지어내지 않는다 — 버린다
-                seen_panos[pano.pano_id] = "offroute"
-                save(f"off-{got:03d}x", "offroute", False, "offroute", pano,
-                     nbrs[0].heading, d)
-            except Exception as e:
-                # 캡처 1건 실패로 try 전체가 빠져나가면 이미 찍은 수백 장이
-                # jsonl 기록 없이 유실된다 (리뷰 지적 — positive 루프와 동일 보호)
-                stats["capture_fail"] = stats.get("capture_fail", 0) + 1
-                log_err(f"offroute capture {pano.pano_id}: {e}")
-                continue
-            got += 1
-            print(f"\roffroute {got}/{need_off}  경과 {time.time() - t0:.0f}s",
-                  end="", flush=True)
-        print()
-    finally:
-        provider.close()
-
-    hdr = {"type": "run_start",
-           "ts": datetime.now(UTC).isoformat(timespec="seconds"),
-           "geom_sha256": hashlib.sha256(GEOM.read_bytes()).hexdigest(),
-           "sampling": {k: getattr(cfg, k) for k in
-                        ("interval_m", "buffer_m", "offroute_max_m",
-                         "snap_radius_m", "offroute_snap_radius_m",
-                         "neg_ratio", "grid_m")},
-           "include_suspect": a.include_suspect, "skipped_courses": skipped}
-    with SAMPLES.open("w", encoding="utf-8") as f:
-        f.write(json.dumps(hdr, ensure_ascii=False) + "\n")
-        for r in rows:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
-        for msg in errors:
-            f.write(json.dumps({"type": "event", "kind": "error", "msg": msg},
+    t0 = time.time()
+    n_rows = 0
+    fresh = not paths.samples.exists()
+    paths.samples.parent.mkdir(parents=True, exist_ok=True)
+    with paths.samples.open("a", encoding="utf-8") as f:
+        if fresh:
+            f.write(json.dumps({
+                "type": "run_start",
+                "ts": datetime.now(UTC).isoformat(timespec="seconds"),
+                "dataset": paths.name,
+                "geom_sha256": hashlib.sha256(paths.geom.read_bytes()).hexdigest(),
+                "sampling": {k: getattr(cfg, k) for k in
+                             ("interval_m", "head_m", "snap_radius_m",
+                              "max_panos_per_course")},
+                "positives_only": True,
+                "include_suspect": a.include_suspect,
+                "skipped_courses": skipped,
+            }, ensure_ascii=False) + "\n")
+            f.flush()
+        try:
+            for c in courses:
+                cid = c["course_id"]
+                for sub in ("pos", "discard"):
+                    # 검수자의 목적지를 미리 만들어 둔다. neg/ 는 만들지 않는다 —
+                    # 음성은 별도 수집이고, pos 에서 옮기지 않는다 (§5 폐기 기록).
+                    (paths.images / cid / sub).mkdir(parents=True, exist_ok=True)
+                for row in collector.course(c, seen, seq_by_course.get(cid, 0)):
+                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
+                    f.flush()          # 중간에 죽어도 거기까지는 남는다
+                    n_rows += 1
+        finally:
+            collector.close()
+            for msg in errors:
+                f.write(json.dumps({"type": "event", "kind": "error", "msg": msg},
+                                   ensure_ascii=False) + "\n")
+            f.write(json.dumps({"type": "run_end", "stats": collector.stats,
+                                "added": n_rows,
+                                "wall_s": round(time.time() - t0, 1)},
                                ensure_ascii=False) + "\n")
-        f.write(json.dumps({"type": "run_end", "stats": stats,
-                            "wall_s": round(time.time() - t0, 1)},
-                           ensure_ascii=False) + "\n")
-    n_pos_done = sum(1 for r in rows if r["label"])
-    print(f"wrote {SAMPLES} — 샘플 {len(rows)} (T {n_pos_done} / "
-          f"F {len(rows) - n_pos_done}) · 스킵 {stats}")
-    print(f"이미지: {IMAGES}/<코스>/pos|neg/ — 검수는 파일 이동으로 "
-          f"(pos↔neg 이동=라벨 뒤집기, discard/=폐기)")
+
+    print(f"\nwrote {paths.samples} — 이번 런에서 {n_rows}장 · 스킵 {collector.stats}")
+    print(f"이미지: {paths.images}/<코스>/pos/ — 검수는 파일 이동으로 "
+          f"(discard/ = 폐기)")
     return 0
 
 

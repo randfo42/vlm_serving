@@ -186,34 +186,45 @@ fixture:
   images_dir: null
 
 # ── 라벨 샘플링 (app/labels/make_samples.py) ──────────────────────────────
+#
+# ⚠️ 이 구획은 **양성 전용**이다. 음성 자동 생성(같은 pano 이각·코스 밖 격자)은
+# 2026-08-19 에 폐기됐다 — 라벨 단위가 (pano,heading) 이 아니라 pano 이기
+# 때문이다. 논거와 그 자리를 무엇이 대신하는지는 docs/22-labels.md §5·§8.
 sampling:
   # 폴리라인 리샘플 간격(m). Kakao pano 가 도로에서 ~10~20m 간격이라 50m 면
-  # 이웃 샘플이 같은 pano 로 스냅되는 중복이 드물다. 종로 9코스(~22km)에서
-  # positive 수백 개 규모 — 캡처 ~2s/장, eval ~2.2s/장에 맞는 파일럿 크기다.
-  # 첫 dry-run 의 개수를 보고 조정한다.
+  # 이웃 샘플이 같은 pano 로 스냅되는 중복이 드물다 (실측 수율 78%).
   interval_m: 50.0
 
-  # 이 거리(m) 안쪽 pano 는 negative 후보에서 제외한다. 코스 폴리라인과
-  # 그 주변 보행 환경이 섞이는 완충 지대다. offroute negative 는 이 밖에서만.
-  buffer_m: 150.0
-
-  # offroute negative 를 찾는 최대 거리(m). 너무 멀면 장면 맥락(종로 시가지)
-  # 이 달라져 negative 가 쉬워진다 — 하드 네거티브의 목적에 어긋난다.
-  offroute_max_m: 1000.0
+  # 코스마다 **시작 몇 m 까지** 쓸지. 150개 코스 421km 를 전부 찍으면 캡처만
+  # 7시간이고, 같은 코스의 인접 50m 점은 거의 같은 장면이라 정보가 안 는다.
+  # 코스 수(테마 5종 × 자치구 28곳)가 다양성을 사는 축이다.
+  #
+  # ⚠️ 알려진 편향: 코스 앞머리는 진입로·주차장·역 출구가 많다. 코스 중반의
+  # 전형적인 산책로 장면이 과소 대표된다 → docs/22-labels.md §8 에 기록.
+  # 나머지 구간 수집은 TODO.
+  head_m: 1000.0
 
   # 리샘플 점 → pano 스냅 반경(m). geo.snap_radius_m(25, 시작점용)보다 살짝
   # 넓다 — 폴리라인이 길 중앙선이고 로드뷰 촬영차선이 몇 m 비껴 있기 때문.
+  # 스냅 결과가 폴리라인에서 이 값의 1.5배를 넘으면 평행한 옆길로 본다.
   snap_radius_m: 30.0
 
-  # offroute 격자점의 스냅 반경(m). 격자(200m)가 성기므로 positive 보다
-  # 느슨하게 잡는다 — 어느 pano 든 버퍼 밖이기만 하면 negative 로 쓸 수 있다.
-  offroute_snap_radius_m: 60.0
+  # 코스당 pano 상한. head_m 컷 뒤에도 남을 수 있는 안전판이다
+  # (짧은 간격 + 긴 head_m 조합). 0 이면 상한 없음.
+  max_panos_per_course: 0
 
-  # negative : positive 최소 비율. docs/02-open-questions.md §2b "최소 1:1".
-  neg_ratio: 1.0
+  # 코스 N개마다 provider(브라우저)를 재시작한다. 수 시간짜리 Playwright
+  # 세션의 누수·정체를 잘라내고, 크래시 손실을 N코스로 묶는다.
+  # 재시작 비용은 세션 첫 캡처 폐기 ~1.5s 뿐이다. 0 이면 재시작 안 함.
+  provider_restart_every: 10
 
-  # offroute 후보를 찾는 격자 간격(m). 코스 bbox 를 이 간격으로 훑는다.
-  grid_m: 200.0
+# ── 라벨 데이터셋 ─────────────────────────────────────────────────────────
+labels:
+  # app/labels/<이름>/ 의 이름. 스크립트의 --dataset 가 이걸 덮는다.
+  #   jongno = 종로구 걷기코스 9개 (파일럿, 전 구간)
+  #   seoul  = 서울 테마산책길 150개 (시작 head_m 만)
+  # 둘을 합치지 않는 이유는 docs/22-labels.md §9.
+  dataset: seoul
 
 # ── 평가 러너 (app/run_eval.py) ───────────────────────────────────────────
 eval:

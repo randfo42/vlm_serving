@@ -27,6 +27,9 @@ INK = "#1a1a1a"
 
 TILE = 256
 UA = "trailwalk-plot/0.1 (local research; one-off dev rendering)"
+# 타일 디스크 캐시. 150코스를 그리면 코스당 ~20타일 × 150 = 3,000 요청이고
+# 인접 코스는 타일을 공유한다. OSM 타일 사용정책상 벌크 요청은 피해야 한다.
+CACHE = Path(__file__).resolve().parent.parent / "labels" / ".tilecache"
 
 
 def merc(lat: float, lng: float, z: int) -> tuple[float, float]:
@@ -37,13 +40,19 @@ def merc(lat: float, lng: float, z: int) -> tuple[float, float]:
 
 
 def fetch_tile(z: int, tx: int, ty: int) -> bytes | None:
+    cached = CACHE / str(z) / str(tx) / f"{ty}.png"
+    if cached.exists():
+        return cached.read_bytes()
     req = urllib.request.Request(
         f"https://tile.openstreetmap.org/{z}/{tx}/{ty}.png", headers={"User-Agent": UA})
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
-            return r.read()
+            data = r.read()
     except Exception:
-        return None
+        return None                # 타일 하나 빠져도 그림은 성립한다
+    cached.parent.mkdir(parents=True, exist_ok=True)
+    cached.write_bytes(data)
+    return data
 
 
 def load_samples(path: Path, course_id: str) -> list[dict]:
@@ -152,6 +161,8 @@ def main() -> int:
     ap.add_argument("-o", "--out", default=None,
                     help="SVG 경로 (all 이면 디렉터리). 기본: geom 옆 svg/")
     ap.add_argument("--no-map", action="store_true", help="타일 배경 없이 (오프라인)")
+    ap.add_argument("--dataset", default=None,
+                    help="geom 대신 데이터셋 이름으로 경로를 잡는다")
     a = ap.parse_args()
 
     data = json.loads(Path(a.geom).read_text(encoding="utf-8"))

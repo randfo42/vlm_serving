@@ -35,7 +35,6 @@ from trailwalk.runlog import RunLog
 from trailwalk.vlm import ServerDeadError, VlmClient, VlmError
 
 APP = Path(__file__).resolve().parent
-IMAGES = APP / "labels" / "jongno" / "images"
 
 
 def load_labels(path: Path) -> list[dict]:
@@ -115,11 +114,16 @@ def main() -> int:
               f"  apply_review.py 를 먼저 돌릴 것 (파이프라인 4단계)", file=sys.stderr)
         return 2
     samples = load_labels(labels_path)
+    # 이미지 루트는 라벨 파일 옆이다. 상수로 박아두면 데이터셋이 둘이 되는
+    # 순간 다른 데이터셋의 이미지를 읽으면서 조용히 돈다 (실제로 jongno 로
+    # 박혀 있었다). labels.jsonl 의 image 는 이 루트 기준 상대경로다.
+    images_root = labels_path.parent / "images"
     out = Path(st.eval.out) if st.eval.out else (
         APP / "runs" / f"{datetime.now(UTC):%Y%m%dT%H%M%SZ}-eval.jsonl")
 
     header = {"kind": "eval", "schema": "eval", "url": st.vlm.url,
               "labels_path": str(labels_path),
+              "images_root": str(images_root),
               "labels_sha256": hashlib.sha256(labels_path.read_bytes()).hexdigest(),
               "n_labels": len(samples),
               "config_path": str(Path(a.config).resolve() if a.config
@@ -148,7 +152,7 @@ def main() -> int:
     n_err = 0
     with RunLog(out, header, append=bool(skip)) as log:
         for i, s in enumerate(todo, 1):
-            img_path = IMAGES / s["image"]
+            img_path = images_root / s["image"]
             try:
                 uri, fmt = view_to_data_uri(img_path.read_bytes())
                 v = client.assess(uri, heading=s["heading"])

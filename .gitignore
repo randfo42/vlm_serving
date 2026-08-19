@@ -15,11 +15,13 @@ app/runs/*.jsonl
 app/runs/images/
 # 라벨 이미지도 같은 이유. 라벨 대장(samples/labels.jsonl)은 커밋하고
 # 이미지 바이트만 로컬에 둔다 — 재수집은 make_samples.py 로 재현 가능
-app/labels/jongno/images/
+app/labels/*/images/
+app/labels/*/retired_v1_neg/
 # 코스 SVG 는 OSM 타일이 base64 로 박혀 장당 1~2MB 다. plot_course.py 로 재생성
-app/labels/jongno/svg/
+app/labels/*/svg/
+app/labels/.tilecache/
 # dry-run 산출물 — make_samples.py --dry-run 으로 재생성
-app/labels/jongno/samples_dry.jsonl
+app/labels/*/samples_dry.jsonl
 
 # 비밀값 — 절대 커밋하지 않는다.
 # 형식만 app/.env.example 에 남기고 값은 각자 로컬에 둔다.
