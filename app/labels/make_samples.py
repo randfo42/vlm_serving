@@ -9,7 +9,12 @@
 
 ### 라벨 설계 (자동 라벨 = 검수 전 가설이다)
 
-- p / true  — 폴리라인 50m 리샘플 → pano 스냅, heading = 진행 방위
+- p / true  — 폴리라인 50m 리샘플 → pano 스냅. **heading 은 화살표(이웃
+  그래프)의 방위**이고, 코스 진행 방위는 여러 화살표 중 어느 것을 고를지의
+  선택자로만 쓴다. 진행 방위를 그대로 쓰면 경유지가 길 건너 POI 인 지점에서
+  카메라가 옆 건물을 본다 — 실측으로 확인된 사고라 화살표 기준으로 바꿨다.
+  walk 루프가 Neighbor.heading 으로 겨냥하는 것과 같은 기준이다.
+  코스 방위와 채택 화살표의 차는 arrow_diff_deg 로 남긴다 (검수 참고)
 - o / false — positive pano 에서 ±90° 화각. 22-labels.md §5 —
   좌표가 같아 가장 값싸고 가장 어려운 음성
 - r / false — positive pano 에서 180° 화각. **검수에서 가장 많이 뒤집힐
@@ -35,7 +40,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from trailwalk import settings as settings_mod
-from trailwalk.geo import norm_deg, point_to_polyline_m, resample_polyline
+from trailwalk.geo import angle_diff, norm_deg, point_to_polyline_m, resample_polyline
 
 HERE = Path(__file__).resolve().parent / "jongno"
 GEOM = HERE / "courses_geom.json"
@@ -60,6 +65,17 @@ def load_polylines(geom: dict, include_suspect: bool, only: set[str] | None,
         if polys:
             out[cid] = polys
     return out, skipped
+
+
+def pick_arrow_heading(course_bearing: float,
+                       arrow_headings: list[float]) -> tuple[float, float]:
+    """코스 진행 방위에 가장 가까운 화살표 방위를 고른다. 반환: (화살표, 차이).
+
+    화살표(pano 그래프)가 실측이고 코스 방위는 선택자다. 빈 목록은 호출자가
+    미리 걸러야 한다 — 화살표가 없으면 방위를 지어내지 않고 pano 를 버린다.
+    """
+    best = min(arrow_headings, key=lambda h: angle_diff(h, course_bearing))
+    return best, angle_diff(best, course_bearing)
 
 
 def positive_candidates(polys: list[list[tuple[float, float]]],
@@ -163,7 +179,8 @@ def main() -> int:
         print(f"\n  ! {msg}", file=sys.stderr)
 
     def save(sample_id: str, cid: str, label: bool, source: str, pano, heading: float,
-             dist_m: float | None) -> None:
+             dist_m: float | None, course_bearing: float | None = None,
+             arrow_diff: float | None = None) -> None:
         sub = "pos" if label else "neg"
         heading = norm_deg(heading)     # 파일명·대장 둘 다 [0,360). -90 이 그대로
                                         # 파일명에 들어가 조인 규칙을 깬 적이 있다
@@ -178,6 +195,9 @@ def main() -> int:
             "pano_id": pano.pano_id, "lat": pano.lat, "lng": pano.lng,
             "heading": round(norm_deg(heading), 1),
             **({"dist_to_route_m": round(dist_m, 1)} if dist_m is not None else {}),
+            **({"course_bearing": round(norm_deg(course_bearing), 1)}
+               if course_bearing is not None else {}),
+            **({"arrow_diff_deg": round(arrow_diff, 1)} if arrow_diff is not None else {}),
             "image": f"{cid}/{sub}/{name}",
         })
 
@@ -206,16 +226,28 @@ def main() -> int:
                     # 스냅이 폴리라인에서 이만큼 벗어났다 = 평행한 옆길에 붙었다
                     stats["off_polyline"] += 1
                     continue
+                try:
+                    nbrs = provider.neighbors(pano)
+                except Exception as e:
+                    stats["no_neighbor"] += 1
+                    log_err(f"{cid} neighbors {pano.pano_id}: {e}")
+                    continue
+                if not nbrs:
+                    # 화살표가 없으면 방위를 지어내지 않는다 — 버린다
+                    stats["no_neighbor"] += 1
+                    continue
+                arrow, diff = pick_arrow_heading(heading, [n.heading for n in nbrs])
                 seen_panos[pano.pano_id] = cid
                 base = f"{cid}-{seq:03d}"
                 try:
-                    save(f"{base}p", cid, True, "route", pano, heading, d)
+                    save(f"{base}p", cid, True, "route", pano, arrow, d,
+                         course_bearing=heading, arrow_diff=diff)
                     # 같은 pano 이각 negative: 절반 직교(o, 좌우 교대), 1/4 역방향(r)
                     if seq % 2 == 0:
                         save(f"{base}o", cid, False, "orth", pano,
-                             heading + (90.0 if seq % 4 == 0 else -90.0), d)
+                             arrow + (90.0 if seq % 4 == 0 else -90.0), d)
                     if seq % 4 == 1:
-                        save(f"{base}r", cid, False, "rev", pano, heading + 180.0, d)
+                        save(f"{base}r", cid, False, "rev", pano, arrow + 180.0, d)
                 except Exception as e:
                     stats["capture_fail"] = stats.get("capture_fail", 0) + 1
                     log_err(f"{cid} capture {pano.pano_id}: {e}")

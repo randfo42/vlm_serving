@@ -159,3 +159,19 @@ def test_effective_waypoints_merges_close_nodes():
     ]}
     wps = routes.effective_waypoints(course)
     assert [w["name"] for w in wps] == ["A", "D"]
+
+
+def test_pick_arrow_heading_selects_nearest_arrow():
+    # heading 의 기준은 화살표(실측)이고 코스 방위는 선택자다 — 진행 방위를
+    # 그대로 쓰면 경유지가 길 건너 POI 인 지점에서 옆 건물을 본다 (실측 사고)
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "make_samples", APP / "labels" / "make_samples.py")
+    ms = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ms)
+    # 도로가 70/250 축, 코스 진행 310° → 250° 화살표가 선택돼야 한다
+    arrow, diff = ms.pick_arrow_heading(310.0, [70.0, 250.0])
+    assert arrow == 250.0 and diff == pytest.approx(60.0)
+    # 0/360 랩
+    arrow, diff = ms.pick_arrow_heading(5.0, [350.0, 180.0])
+    assert arrow == 350.0 and diff == pytest.approx(15.0)
