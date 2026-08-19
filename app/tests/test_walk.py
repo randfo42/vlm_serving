@@ -14,65 +14,10 @@ from dataclasses import replace
 
 import pytest
 
-from conftest import make_image
+from conftest import Client, Provider, nb
 from trailwalk import settings
-from trailwalk.providers.base import Neighbor, Pano, ProviderError
+from trailwalk.providers.base import ProviderError
 from trailwalk.walk import WalkConfig, walk
-
-
-class Verdict:
-    def __init__(self, is_trail):
-        self.is_trail = is_trail
-        self.confidence = None
-
-
-class Provider:
-    """이웃 그래프를 흉내낸다. 빈 목록은 **로드 실패**로 읽힌다 (갈래 없음이 아니라)."""
-
-    name = "fake"
-
-    def __init__(self, graph=None, start=("S", 37.5, 127.0)):
-        self.graph = graph or {}
-        self.start = Pano(pano_id=start[0], lat=start[1], lng=start[2])
-        self.probes = []          # (pano_id, heading) — 무엇을 물었는지
-        self.nearest_calls = 0
-        self._img = make_image(size=(320, 180))
-
-    def nearest(self, lat, lng, radius_m):
-        self.nearest_calls += 1
-        if self.nearest_calls == 1:
-            return self.start
-        # 시작점 스냅은 한 번뿐이다. 그 뒤로 불리면 이동이 그래프를 안 쓴 것이다
-        return Pano(pano_id=f"p{self.nearest_calls}", lat=lat, lng=lng)
-
-    def neighbors(self, pano):
-        return list(self.graph.get(pano.pano_id, []))
-
-    def capture(self, pano, heading):
-        self.probes.append((pano.pano_id, round(heading, 1)))
-        return self._img
-
-    def close(self):
-        pass
-
-
-class Client:
-    """probes 의 마지막 항목을 보고 판정을 돌려준다.
-
-    verdicts 에 없는 조합은 False. "명시한 것만 산책로" 라서 테스트가
-    실수로 통과하는 일이 없다.
-    """
-
-    def __init__(self, provider, verdicts):
-        self.provider = provider
-        self.verdicts = verdicts
-
-    def assess(self, uri, *, heading=None):
-        return Verdict(self.verdicts.get(self.provider.probes[-1], False))
-
-
-def nb(pano_id, heading, lat=37.5, lng=127.0):
-    return Neighbor(pano_id=pano_id, heading=heading, lat=lat, lng=lng)
 
 
 def run(provider, verdicts, bearing=90.0, **cfg):

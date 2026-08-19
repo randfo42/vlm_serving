@@ -1,8 +1,8 @@
 """분기 탐색 — 큐 소비와 예산.
 
 test_walk.py 와 같은 원칙이다: VLM 도 브라우저도 없이, 판정 **품질**이 아니라
-판정을 받은 뒤의 **행동**을 검증한다. 가짜 provider/client 도 그쪽 것을 그대로
-쓴다 — 두 루프가 같은 판정 배선을 공유한다는 사실 자체가 지킬 불변식이다.
+판정을 받은 뒤의 **행동**을 검증한다. 가짜 provider/client 는 conftest 것을
+공유한다 — 두 루프가 같은 판정 배선을 쓴다는 사실 자체가 지킬 불변식이다.
 
 특히 지키려는 것:
 
@@ -15,8 +15,8 @@ test_walk.py 와 같은 원칙이다: VLM 도 브라우저도 없이, 판정 **�
 from dataclasses import replace
 
 import pytest
-from test_walk import Client, Provider, nb
 
+from conftest import Client, Provider, nb
 from trailwalk import settings
 from trailwalk.explore import ExploreConfig, explore
 from trailwalk.providers.base import ProviderError
