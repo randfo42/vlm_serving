@@ -99,8 +99,13 @@ def pick_arrow_heading(course_bearing: float,
 
 
 def load_courses(geom: dict, include_suspect: bool, only: set[str] | None,
-                 ) -> tuple[list[dict], list[str]]:
-    """쓸 코스 목록과 제외 사유 로그."""
+                 coverage: dict[str, float] | None = None,
+                 min_coverage: float = 0.0) -> tuple[list[dict], list[str]]:
+    """쓸 코스 목록과 제외 사유 로그.
+
+    coverage 는 {course_id: on_route_ratio}. 로드뷰가 코스 위에 없는 코스를
+    캡처(장당 3초) 전에 걸러낸다 — 찍어봐야 옆 차도만 나온다.
+    """
     out, skipped = [], []
     for c in geom["courses"]:
         cid = c["course_id"]
@@ -108,6 +113,10 @@ def load_courses(geom: dict, include_suspect: bool, only: set[str] | None,
             continue
         if c.get("suspect") and not include_suspect:
             skipped.append(f"{cid} {c['name']} (ratio {c.get('ratio')}x — 라우팅 우회 의심)")
+            continue
+        if coverage is not None and cid in coverage and coverage[cid] < min_coverage:
+            skipped.append(f"{cid} {c['name']} "
+                           f"(로드뷰 커버리지 {coverage[cid]:.0%} < {min_coverage:.0%})")
             continue
         if not head_polyline(c):
             skipped.append(f"{cid} {c['name']} (선두 구간 실패 — 시작점을 알 수 없다)")
@@ -244,8 +253,13 @@ def main() -> int:
         return 2
 
     geom = json.loads(paths.geom.read_text(encoding="utf-8"))
+    coverage = None
+    if paths.coverage.exists():
+        cov = json.loads(paths.coverage.read_text(encoding="utf-8"))
+        coverage = {r["course_id"]: r["on_route_ratio"] for r in cov["courses"]}
     courses, skipped = load_courses(
-        geom, a.include_suspect, set(a.course) if a.course else None)
+        geom, a.include_suspect, set(a.course) if a.course else None,
+        coverage, cfg.coverage_min_ratio)
     for msg in skipped:
         print(f"제외: {msg}")
     if not courses:
@@ -302,7 +316,7 @@ def main() -> int:
                 "geom_sha256": hashlib.sha256(paths.geom.read_bytes()).hexdigest(),
                 "sampling": {k: getattr(cfg, k) for k in
                              ("interval_m", "head_m", "snap_radius_m",
-                              "max_panos_per_course")},
+                              "max_panos_per_course", "coverage_min_ratio")},
                 "positives_only": True,
                 "include_suspect": a.include_suspect,
                 "skipped_courses": skipped,

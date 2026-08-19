@@ -283,3 +283,17 @@ def test_merge_split_parens():
     # 정상 입력은 건드리지 않는다
     assert adapt.merge_split_parens(["안암2교(성북천)", "청계천"]) == \
         ["안암2교(성북천)", "청계천"]
+
+
+def test_coverage_gate_excludes_low_courses():
+    c = _course()
+    geom = {"courses": [c]}
+    # 커버리지 정보가 없으면 게이트가 안 걸린다
+    assert len(ms.load_courses(geom, False, None)[0]) == 1
+    # 임계 미만이면 제외되고 **사유가 남는다** (조용히 사라지지 않는다)
+    courses, skipped = ms.load_courses(geom, False, None, {"t-01": 0.1}, 0.5)
+    assert courses == [] and "커버리지" in skipped[0]
+    # 임계 이상이면 통과
+    assert len(ms.load_courses(geom, False, None, {"t-01": 0.9}, 0.5)[0]) == 1
+    # coverage.json 에 없는 코스는 게이트를 통과시킨다 (프로브를 못 돈 경우)
+    assert len(ms.load_courses(geom, False, None, {"other": 0.1}, 0.5)[0]) == 1

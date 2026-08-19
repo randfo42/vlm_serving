@@ -125,6 +125,7 @@ class SamplingSettings:
     snap_radius_m: float
     max_panos_per_course: int
     provider_restart_every: int
+    coverage_min_ratio: float
 
 
 @dataclass(frozen=True)
