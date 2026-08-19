@@ -39,6 +39,15 @@ def test_시작점에서_모든_이웃을_묻는다():
     assert set(p.probes) == {("S", 90.0), ("S", 270.0), ("S", 0.0)}
 
 
+def test_시작점은_max_candidates로도_안_자른다():
+    """호출 수 = 화살표 개수. 갈림길 한복판에서 시작할 수 있어야 한다."""
+    p = Provider({"S": [nb("A", 0.0), nb("B", 90.0), nb("C", 180.0), nb("D", 270.0)],
+                  "A": [], "B": [], "C": [], "D": []})
+    run(p, {}, max_candidates=2)
+    at_s = [h for pid, h in p.probes if pid == "S"]
+    assert len(at_s) == 4, f"화살표 4개인데 {len(at_s)}번만 물었다"
+
+
 def test_시작점의_이웃을_못_얻으면_아무것도_묻지_않는다():
     """전방향을 흉내내는 start_offsets 가 여기 있었다. 지웠다 — 방위를 지어내면
     없는 길을 물어보게 된다. 시작점의 갈래도 이웃이 알려주는 것이어야 한다."""
@@ -67,6 +76,22 @@ def test_provider가_이름붙여_터뜨린_실패는_삼키지_않는다():
     p.neighbors = boom
     with pytest.raises(ProviderError):
         run(p, {})
+
+
+def test_provider가_예외를_던져도_지어내지_않는다():
+    """neighbors() 가 터지는 것도 '갈래 없음' 이 아니다. ProviderError 는 위로
+    던지지만(→ 앞 테스트) 그 밖의 예외는 이 갈래만 접는다 — 어느 쪽이든 추측
+    방위로 걷지는 않는다."""
+    p = Provider({"S": [nb("A", 90.0)]})
+
+    def boom(_pano):
+        raise RuntimeError("스니핑 실패")
+
+    p.neighbors = boom
+    res = run(p, {})
+    assert p.probes == [], "이웃도 모르는데 무언가를 물었다"
+    assert p.nearest_calls == 1, "좌표를 밀어 다른 pano 를 만들었다"
+    assert [f["reason"] for f in res.frontier] == ["neighbors_missing"]
 
 
 # ── 분기 ───────────────────────────────────────────────────────────────────
@@ -108,6 +133,31 @@ def test_온_길은_다시_묻지_않는다():
                   "B": [nb("A", 270.0)]})
     run(p, {("S", 90.0): True})
     assert ("A", 270.0) not in p.probes
+
+
+def test_시작점_이후에는_다시_상한이_걸린다():
+    """전부 묻기는 시작점 한정이다. 매 노드 그러면 호출이 갈림길 수만큼 곱해진다."""
+    p = Provider({"S": [nb("A", 90.0)],
+                  "A": [nb("S", 270.0), nb("B", 80.0), nb("C", 100.0), nb("D", 60.0)],
+                  "B": [], "C": [], "D": []})
+    run(p, {("S", 90.0): True}, max_candidates=2)
+    at_a = [h for pid, h in p.probes if pid == "A"]
+    assert len(at_a) == 2, f"시작점 뒤에도 상한이 안 걸린다: {at_a}"
+
+
+def test_온_길은_각도가_아니라_pano_id로_빠진다():
+    """U턴 방지로 max_turn_deg 를 걸었었다. 지웠다.
+
+    온 길은 came_from 이 **pano_id 로 정확히** 빼므로 각도 필터가 할 일이
+    없었다. 그래서 크게 꺾이는 **다른** 이웃은 후보에 남는다 — 골목이 예각으로
+    갈라지는 곳에서 멀쩡한 갈래를 각도만 보고 지우지 않는다.
+    """
+    p = Provider({"S": [nb("A", 90.0)],
+                  "A": [nb("S", 270.0), nb("B", 90.0), nb("SHARP", 220.0)],
+                  "B": [], "SHARP": []})
+    run(p, {("S", 90.0): True})
+    assert ("A", 270.0) not in p.probes, "온 길(S)을 다시 물었다"
+    assert ("A", 220.0) in p.probes, "130° 꺾이는 이웃이 각도만으로 사라졌다"
 
 
 def test_그래프_막다른_길은_폴백으로_새지_않는다():
