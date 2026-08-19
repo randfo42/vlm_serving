@@ -114,7 +114,7 @@ def main() -> int:
                 continue
             dist = geo.haversine_m((lat, lng), (pano.lat, pano.lng))
             try:
-                png = prov.capture(pano, heading, 90.0)
+                png = prov.capture(pano, heading)
             except Exception as e:
                 rows.append((name, "잡힘", f"{dist:.0f}m", "캡처실패", str(e)[:40]))
                 continue

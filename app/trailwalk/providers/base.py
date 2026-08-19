@@ -53,25 +53,32 @@ class ProviderError(RuntimeError):
 @runtime_checkable
 class RoadviewProvider(Protocol):
     # 프로토콜 본문에는 메서드만 둔다 (데이터 멤버는 runtime_checkable 과 안 맞는다).
-    # 관례 속성: `uses_graph: bool` — 이웃 그래프가 실재하는 provider 인가.
-    # True 면 neighbors() 의 빈 목록은 "갈래 없음" 이 아니라 로드 실패로 읽어야
-    # 한다 (kakao=True, fixture=False). 호출자는 getattr(p, "uses_graph", False).
     name: str
 
     def nearest(self, lat: float, lng: float, radius_m: float) -> Pano | None:
         """좌표에서 radius_m 안의 가장 가까운 파노라마. 없으면 None."""
         ...
 
-    def capture(self, pano: Pano, heading: float, fov_deg: float) -> bytes:
-        """pano 를 heading 방향에서 본 한 화각. 인코딩된 이미지 바이트."""
+    def capture(self, pano: Pano, heading: float) -> bytes:
+        """pano 를 heading 방향에서 본 한 화각. 인코딩된 이미지 바이트.
+
+        **화각은 provider 가 정한다.** 한때 `fov_deg` 를 인자로 받았는데,
+        호출자가 화각을 지시하는 모양이면서 아무도 그 값을 쓰지 않았다 —
+        Kakao 는 각도를 받을 수단 자체가 없고(zoom 은 −3~3 이산 배율),
+        fixture 는 원본 사진의 화각을 그대로 돌려준다. 지시할 수 없는 것을
+        지시하는 계약이라 지웠다 (→ docs/23-open-questions.md §3).
+        """
         ...
 
     def neighbors(self, pano: Pano) -> list[Neighbor]:
-        """이 pano 에서 한 발 갈 수 있는 이웃들. 모르면 빈 리스트.
+        """이 pano 에서 한 발 갈 수 있는 이웃들.
 
-        **선택 구현이다.** 빈 리스트를 돌려주면 walk.py 가 좌표를 직접 미는
-        예전 방식으로 되돌아간다. 이웃을 주는 provider 에서는 그래프를 따라가고,
-        못 주는 provider 에서도 탐색이 계속 돌아야 하기 때문이다.
+        **필수 구현이다.** 이동 수단이 이것 하나뿐이다 — 좌표를 heading 방향으로
+        밀어 스냅하던 폴백은 없앴다 (→ docs/20-app-design.md §3).
+
+        빈 리스트는 "갈래가 없다" 가 아니라 **이웃 목록을 못 얻었다** 로 읽힌다.
+        호출자는 거기서 멈추고 `neighbors_missing` 으로 기록한다. 진짜 막다른
+        길은 "이웃은 있는데 전부 온 길/기방문" 이고, 그건 호출자가 판단한다.
         """
         ...
 

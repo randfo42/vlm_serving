@@ -15,20 +15,9 @@ SEOUL = (37.5665, 126.9780)
 
 # ── geo ────────────────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("bearing", [0, 45, 90, 135, 180, 225, 270, 315, 359.9])
-@pytest.mark.parametrize("dist", [1.0, 12.0, 500.0])
-def test_이동한_만큼_떨어져_있다(bearing, dist):
-    dst = geo.destination(SEOUL, bearing, dist)
-    assert geo.haversine_m(SEOUL, dst) == pytest.approx(dist, rel=1e-6)
-
-
-@pytest.mark.parametrize("bearing", [0, 30, 90, 180, 270, 350])
-def test_이동한_방향이_그_방위다(bearing):
-    # 0 과 360 은 같은 방위다. 뺄셈으로 비교하면 북쪽에서만 실패한다 —
-    # angle_diff 가 있는 이유가 바로 이것이므로 그걸로 잰다.
-    dst = geo.destination(SEOUL, bearing, 100.0)
-    assert geo.angle_diff(geo.bearing_deg(SEOUL, dst), bearing) < 1e-6
-
+# `geo.destination` 을 왕복으로 검증하던 테스트들이 여기 있었다. 함수를 지웠다 —
+# 좌표를 밀어 다음 지점을 지어내는 이동이 없어졌기 때문이다 (→ 20-app-design.md §3).
+# 그 자리를 대신하는 것이 아래 fixture 격자 그래프의 왕복 테스트다.
 
 def test_방위각은_항상_0에서_360():
     for b in (-720.0, -1.0, 0.0, 359.9, 360.0, 1080.5):
@@ -51,11 +40,10 @@ def test_각도차는_대칭이다():
     assert geo.angle_diff(10.0, 350.0) == geo.angle_diff(350.0, 10.0)
 
 
-def test_날짜변경선을_넘어도_경도가_유효하다():
-    """-180/180 근처에서 경도가 튀면 스냅이 지구 반대편을 찍는다."""
-    lat, lng = geo.destination((0.0, 179.999), 90.0, 1000.0)
-    assert -180.0 <= lng <= 180.0
-    assert geo.haversine_m((0.0, 179.999), (lat, lng)) == pytest.approx(1000.0, rel=1e-6)
+def test_날짜변경선을_넘어도_방위가_유효하다():
+    """-180/180 근처에서 방위가 튀면 후보 정렬이 뒤집힌다."""
+    b = geo.bearing_deg((0.0, 179.999), (0.0, -179.999))
+    assert geo.angle_diff(b, 90.0) < 1e-6
 
 
 # ── fixture provider 의 격자 스냅 ───────────────────────────────────────────
@@ -95,16 +83,8 @@ def test_한_격자_칸_안에서_경도가_미끄러지지_않는다(fx):
     assert len(ids) == 1, f"한 칸 안에서 pano_id 가 갈렸다: {sorted(ids)}"
 
 
-def test_한_바퀴_돌아오면_같은_pano다(fx):
-    """재방문 감지가 실제로 걸리는지. 이게 안 되면 루프를 영원히 못 잡는다."""
-    p = SEOUL
-    for b in (0.0, 90.0, 180.0, 270.0):
-        p = geo.destination(p, b, GRID_M * 3)
-    assert fx.nearest(*p, 25.0).pano_id == fx.nearest(*SEOUL, 25.0).pano_id
-
-
 def test_충분히_멀면_다른_pano다(fx):
-    far = geo.destination(SEOUL, 90.0, GRID_M * 10)
+    far = (SEOUL[0], SEOUL[1] + GRID_M * 10 / (111_320.0 * math.cos(math.radians(SEOUL[0]))))
     assert fx.nearest(*far, 25.0).pano_id != fx.nearest(*SEOUL, 25.0).pano_id
 
 
@@ -116,12 +96,45 @@ def test_스냅된_좌표가_원점에서_격자_안에_있다(fx):
 def test_같은_지점_같은_방향은_같은_그림이다(fx):
     """결정적이어야 회귀 비교가 의미를 갖는다."""
     pano = fx.nearest(*SEOUL, 25.0)
-    assert fx.capture(pano, 90.0, 90.0) == fx.capture(pano, 90.0, 90.0)
+    assert fx.capture(pano, 90.0) == fx.capture(pano, 90.0)
 
 
-def test_fixture는_이웃을_주지_않는다(fx):
-    """일부러 비워 둔다 — 그래프 경로와 폴백 경로가 **둘 다** 테스트되도록."""
-    assert fx.neighbors(fx.nearest(*SEOUL, 25.0)) == []
+# ── fixture 의 격자 그래프 ──────────────────────────────────────────────────
+#
+# 이동 수단이 이웃 그래프 하나뿐이라(→ 20-app-design.md §3) fixture 도 그래프를
+# 줘야 한다. 예전에는 빈 목록을 주고 walk 가 좌표 밀기로 되돌아갔다.
+
+def test_격자_이웃은_네_방향이다(fx):
+    nbrs = fx.neighbors(fx.nearest(*SEOUL, 25.0))
+    assert sorted(n.heading for n in nbrs) == [0.0, 90.0, 180.0, 270.0]
+
+
+def test_이웃의_pano_id는_그_좌표로_스냅한_것과_같다(fx):
+    """다르면 재방문 감지가 영원히 안 걸린다 — 같은 자리를 매번 새 pano 로 본다."""
+    for n in fx.neighbors(fx.nearest(*SEOUL, 25.0)):
+        assert fx.nearest(n.lat, n.lng, 25.0).pano_id == n.pano_id
+
+
+def test_한_바퀴_돌아오면_같은_pano다(fx):
+    """재방문 감지가 실제로 걸리는지. 이게 안 되면 루프를 영원히 못 잡는다.
+
+    격자를 그래프로 북→동→남→서 한 바퀴 돈다. 좌표를 미는 게 아니라
+    이웃을 따라간다 — 실제 탐색이 하는 것과 같은 이동이다.
+    """
+    start = fx.nearest(*SEOUL, 25.0)
+    p = start
+    for heading in (0.0, 90.0, 180.0, 270.0):
+        n = next(x for x in fx.neighbors(p) if x.heading == heading)
+        p = fx.nearest(n.lat, n.lng, 25.0)
+    assert p.pano_id == start.pano_id
+
+
+def test_이웃의_이웃에는_원래_자리가_들어_있다(fx):
+    """되짚어 오는 길이 있어야 walk 의 `came_from` 제외가 의미를 갖는다."""
+    start = fx.nearest(*SEOUL, 25.0)
+    north = fx.neighbors(start)[0]
+    back = fx.nearest(north.lat, north.lng, 25.0)
+    assert start.pano_id in {n.pano_id for n in fx.neighbors(back)}
 
 
 def test_이미지가_없으면_바로_실패한다(tmp_path):

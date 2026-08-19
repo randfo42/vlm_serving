@@ -39,7 +39,14 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from .base import Neighbor, Pano, ProviderError
 
-VIEW_W, VIEW_H = 1280, 720   # 16:9 — imaging.TARGET_SIZE 와 맞춰 리사이즈를 무해하게
+# 기본 뷰포트. 16:9 — imaging.TARGET_SIZE 와 맞춰 리사이즈를 무해하게.
+#
+# ⚠️ **이 값이 가로 화각을 정한다.** Kakao 는 세로 화각을 ~59.5°(zoom 0)로 고정하고
+# 가로는 종횡비에서 파생시킨다 — 1280×720 에서 90.9° 다 (실측 → check_fov.py,
+# docs/23-open-questions.md §3). 그런데 이 숫자는 화각을 보고 고른 것이 아니라
+# **이미지 토큰을 264 로 고정하려고** TARGET_SIZE 에 맞춘 것이다. 즉 지금의 화각은
+# 토큰 예산 결정의 부산물이다. 바꾸면 화각과 토큰 수가 같이 움직인다.
+VIEW_W, VIEW_H = 1280, 720
 
 # SDK 가 pano 를 띄울 때 스스로 치는 내부 JSON 엔드포인트.
 # 우리는 **추가 요청을 보내지 않고 응답만 가로챈다** (→ neighbors()).
@@ -198,15 +205,16 @@ window.__show = function (panoId, pan) {
 _ARROW_CSS = '#rv [id^="_al_"], #rv [id^="_atl_"] { display: none !important; }'
 
 
-def build_page(appkey: str, *, hide_arrows: bool = False) -> str:
+def build_page(appkey: str, *, hide_arrows: bool = False,
+               view_w: int = VIEW_W, view_h: int = VIEW_H) -> str:
     """페이지 HTML 조립.
 
     `%` 포매팅을 쓰지 않는다 — 본문이 CSS 와 JS 라 `%` 가 흔하고, 한 번
     엇갈리면 원인을 찾기 어려운 방식으로 깨진다.
     """
     return (_PAGE
-            .replace("{{W}}", str(VIEW_W))
-            .replace("{{H}}", str(VIEW_H))
+            .replace("{{W}}", str(view_w))
+            .replace("{{H}}", str(view_h))
             .replace("{{ARROW_CSS}}", _ARROW_CSS if hide_arrows else "")
             .replace("{{APPKEY}}", appkey))
 
@@ -227,13 +235,10 @@ class _Handler(BaseHTTPRequestHandler):
 
 class KakaoProvider:
     name = "kakao"
-    # 이웃 그래프가 실재하는 provider 다. neighbors() 가 빈 목록을 주면 그것은
-    # "갈래가 없다" 가 아니라 **로드 실패**다 — explore 는 이 플래그를 보고
-    # 좌표 밀기(추측)로 새지 않는다.
-    uses_graph = True
 
     def __init__(self, appkey: str, *, host: str = "127.0.0.1", port: int = 8731,
-                 headless: bool = True, hide_arrows: bool = False):
+                 headless: bool = True, hide_arrows: bool = False,
+                 view_w: int = VIEW_W, view_h: int = VIEW_H):
         if not appkey:
             raise ProviderError(
                 "Kakao JS 앱키가 없다. 개발자 콘솔에서 발급하고 플랫폼 > Web 에 "
@@ -245,8 +250,12 @@ class KakaoProvider:
                 "playwright 가 없다:\n"
                 "  pip install -r app/requirements.txt && playwright install chromium") from e
 
+        # 뷰포트는 페이지 CSS 와 브라우저 viewport 양쪽에 박힌다. 둘이 어긋나면
+        # 스크롤바가 생기거나 캔버스가 잘려서 화각이 조용히 달라진다.
+        self.view_w, self.view_h = view_w, view_h
         handler = type("H", (_Handler,), {
-            "page": build_page(appkey, hide_arrows=hide_arrows).encode()})
+            "page": build_page(appkey, hide_arrows=hide_arrows,
+                               view_w=view_w, view_h=view_h).encode()})
         self._httpd = HTTPServer((host, port), handler)
         threading.Thread(target=self._httpd.serve_forever, daemon=True).start()
 
@@ -257,7 +266,7 @@ class KakaoProvider:
             # 나오는 가장 흔한 원인이 GPU 컨텍스트 부재다.
             args=["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"])
         self._origin = f"http://{host}:{port}"
-        self._page = self._browser.new_page(viewport={"width": VIEW_W, "height": VIEW_H})
+        self._page = self._browser.new_page(viewport={"width": view_w, "height": view_h})
         # pano 하나를 띄울 때마다 SDK 가 스스로 노드 정보를 받아온다. 그 응답에
         # 이웃 목록이 들어 있다 — 우리가 따로 요청하지 않고 지나가는 것을 줍는다.
         self._spots: dict[str, list[Neighbor]] = {}
@@ -381,9 +390,10 @@ class KakaoProvider:
                 f"  로드뷰 위치 갱신이 늦은 것으로 보인다 — pano={pid}")
         return Pano(pano_id=pid, lat=pos["lat"], lng=pos["lng"])
 
-    def capture(self, pano: Pano, heading: float, fov_deg: float) -> bytes:
-        # fov_deg 는 쓰지 않는다. Kakao 의 zoom 은 −3~3 의 이산 배율이라 각도로
-        # 지정할 수 없다. zoom 0 의 기본 화각을 그대로 쓴다. → 23-open-questions.md §3
+    def capture(self, pano: Pano, heading: float) -> bytes:
+        # 화각은 Kakao 가 주는 대로 쓴다 — zoom 0 고정. 각도로 지정할 수단이
+        # 없다(zoom 은 −3~3 이산 배율). 실측 결과는 가로 90.9°/세로 59.5° 이고,
+        # 가로는 뷰포트 종횡비에서 파생된다 (→ VIEW_W 주석, 23-open-questions.md §3).
         try:
             self._page.evaluate("([p,h]) => window.__show(p,h)", [pano.pano_id, heading % 360])
         except Exception as e:
@@ -433,8 +443,14 @@ class KakaoProvider:
 
     def close(self) -> None:
         for shut in (lambda: self._browser.close(), lambda: self._pw.stop(),
-                     lambda: self._httpd.shutdown()):
+                     lambda: self._httpd.shutdown(), lambda: self._httpd.server_close()):
             # 하나가 실패해도 나머지는 닫아야 한다. 브라우저가 이미 죽어 있어도
             # 로컬 HTTP 서버 스레드는 반드시 내려가야 프로세스가 끝난다.
+            #
+            # ⚠️ shutdown() 과 server_close() 는 **둘 다** 필요하다. shutdown() 은
+            # serve_forever 루프만 멈추고 리스닝 소켓은 열어둔다. 그래서 한 프로세스
+            # 안에서 provider 를 닫고 다시 만들면 두 번째가 포트를 못 잡는다
+            # (OSError: Address already in use). check_fov.py 가 화살표 유무로
+            # 세션을 두 번 여는데 거기서 실제로 터졌다.
             with contextlib.suppress(Exception):
                 shut()

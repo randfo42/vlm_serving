@@ -164,16 +164,16 @@ def test_세션의_첫_캡처는_버린다():
     page = FakePage(["COLD", "COLD", "COLD", "WARM", "WARM", "WARM"])
     p = provider(page)
     p._warmed = False
-    assert p.capture(Pano(pano_id="X", lat=0, lng=0), 90.0, 90.0) == b"WARM"
+    assert p.capture(Pano(pano_id="X", lat=0, lng=0), 90.0) == b"WARM"
 
 
 def test_두_번째_캡처부터는_버리지_않는다():
     page = FakePage(["A"])
     p = provider(page)
     p._warmed = False
-    p.capture(Pano(pano_id="X", lat=0, lng=0), 90.0, 90.0)
+    p.capture(Pano(pano_id="X", lat=0, lng=0), 90.0)
     before = page.shots
-    p.capture(Pano(pano_id="Y", lat=0, lng=0), 90.0, 90.0)
+    p.capture(Pano(pano_id="Y", lat=0, lng=0), 90.0)
     assert page.shots - before == 3, "매 캡처마다 워밍업을 돌고 있다"
 
 
@@ -186,7 +186,7 @@ def test_렌더_실패는_ProviderError로_나간다():
 
     page.evaluate = boom
     with pytest.raises(kakao.ProviderError):
-        provider(page).capture(Pano(pano_id="X", lat=0, lng=0), 90.0, 90.0)
+        provider(page).capture(Pano(pano_id="X", lat=0, lng=0), 90.0)
 
 
 # ── 안정화 상수 ─────────────────────────────────────────────────────────────
@@ -195,3 +195,47 @@ def test_상수가_실측_근거를_벗어나지_않는다():
     """연속 2프레임으로 되돌리면 이 파일 맨 위의 버그가 그대로 돌아온다."""
     assert kakao.RENDER_SETTLE_STABLE >= 3
     assert kakao.TILE_QUIET_MS >= 200
+
+
+# ── 종료 ────────────────────────────────────────────────────────────────────
+
+def test_close_는_리스닝_소켓까지_닫는다():
+    """shutdown() 만으로는 포트가 안 풀린다 — 한 프로세스에서 두 번 못 연다.
+
+    check_fov.py 가 화살표 유무로 세션을 두 번 여는데 거기서 실제로 터졌다
+    (OSError: Address already in use). shutdown() 은 serve_forever 루프만
+    멈추고 리스닝 소켓은 그대로 열어둔다.
+    """
+    called = []
+
+    class FakeHttpd:
+        def shutdown(self): called.append("shutdown")
+        def server_close(self): called.append("server_close")
+
+    p = kakao.KakaoProvider.__new__(kakao.KakaoProvider)
+    p._browser = type("B", (), {"close": lambda self: called.append("browser")})()
+    p._pw = type("P", (), {"stop": lambda self: called.append("pw")})()
+    p._httpd = FakeHttpd()
+    p.close()
+
+    assert "server_close" in called, "리스닝 소켓이 안 닫힌다 — 포트가 물린 채 남는다"
+    assert called.index("shutdown") < called.index("server_close")
+
+
+def test_close_는_하나가_실패해도_나머지를_닫는다():
+    called = []
+
+    class FakeHttpd:
+        def shutdown(self): called.append("shutdown")
+        def server_close(self): called.append("server_close")
+
+    def boom(self):
+        raise RuntimeError("브라우저가 이미 죽었다")
+
+    p = kakao.KakaoProvider.__new__(kakao.KakaoProvider)
+    p._browser = type("B", (), {"close": boom})()
+    p._pw = type("P", (), {"stop": boom})()
+    p._httpd = FakeHttpd()
+    p.close()
+
+    assert called == ["shutdown", "server_close"], "브라우저가 죽으면 포트가 물린 채 남는다"

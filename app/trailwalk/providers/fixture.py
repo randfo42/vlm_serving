@@ -11,11 +11,18 @@
 
 좌표는 격자로 가짜 pano 를 만든다. GRID_M 격자에 스냅하므로 같은 자리를 두 번
 밟으면 pano_id 도 같고, walk.py 의 재방문 감지가 실제로 동작하는지 확인된다.
+
+### 격자가 곧 이웃 그래프다
+
+예전에는 `neighbors()` 가 빈 목록을 줘서 walk 가 좌표 밀기로 되돌아갔고,
+그 폴백 경로를 테스트하는 것이 fixture 의 역할 중 하나였다. **그 경로를
+없앴다** — 이동은 이제 이웃 그래프 하나뿐이다 (→ docs/20-app-design.md §3).
+격자는 원래 그래프이므로 fixture 도 4방향 이웃을 정직하게 준다.
 """
 import hashlib
 from pathlib import Path
 
-from .base import Pano, ProviderError
+from .base import Neighbor, Pano, ProviderError
 
 GRID_M = 10.0          # 가짜 pano 격자 간격 (m)
 _M_PER_DEG_LAT = 111_320.0
@@ -23,7 +30,6 @@ _M_PER_DEG_LAT = 111_320.0
 
 class FixtureProvider:
     name = "fixture"
-    uses_graph = False     # 그래프가 원래 없다. 좌표 밀기가 정상 경로다
 
     def __init__(self, image_dir: Path | str):
         self.dir = Path(image_dir)
@@ -42,23 +48,35 @@ class FixtureProvider:
         glng = round(lng / step_lng) * step_lng
         return Pano(pano_id=f"fx_{glat:.6f}_{glng:.6f}", lat=glat, lng=glng)
 
-    def capture(self, pano: Pano, heading: float, fov_deg: float) -> bytes:
+    def capture(self, pano: Pano, heading: float) -> bytes:
         """pano_id + heading 을 해시해 이미지를 고른다.
 
         결정적이어야 한다 — 같은 자리를 같은 방향에서 보면 같은 그림이 나와야
         재방문 감지와 회귀 비교가 의미를 갖는다.
+
+        ⚠️ **화각은 원본 사진이 갖고 있던 값이고 우리는 그게 뭔지 모른다.**
+        사진마다 다르다. kakao(90.9° 고정)와 fixture 의 판정을 화각 축에서
+        비교하면 안 되는 이유다 (→ docs/23-open-questions.md §3, §6).
         """
         key = f"{pano.pano_id}|{int(heading) // 15}".encode()
         idx = int.from_bytes(hashlib.sha256(key).digest()[:4], "big") % len(self.images)
         return self.images[idx].read_bytes()
 
-    def neighbors(self, pano) -> list:
-        """빈 목록. fixture 에는 그래프가 없다.
+    def neighbors(self, pano: Pano) -> list[Neighbor]:
+        """격자 4방향(북·동·남·서).
 
-        walk.py 가 이걸 보고 좌표 밀기 방식으로 되돌아간다 — 그래프가 있는
-        경로와 없는 경로 **둘 다** 테스트되도록 일부러 비워 둔다.
+        pano_id 는 `nearest()` 에 다시 태워서 만든다. 직접 계산하면 경도 격자
+        폭이 위도에 따라 달라지는 문제(→ nearest 주석)를 여기서 또 틀리게 된다.
+        같은 자리는 언제 도달하든 같은 id 여야 재방문 감지가 동작한다.
         """
-        return []
+        step_lat = GRID_M / _M_PER_DEG_LAT
+        step_lng = GRID_M / (_M_PER_DEG_LAT * max(0.1, abs(_cos(pano.lat))))
+        out = []
+        for heading, dlat, dlng in ((0.0, step_lat, 0.0), (90.0, 0.0, step_lng),
+                                    (180.0, -step_lat, 0.0), (270.0, 0.0, -step_lng)):
+            n = self.nearest(pano.lat + dlat, pano.lng + dlng, 0.0)
+            out.append(Neighbor(pano_id=n.pano_id, heading=heading, lat=n.lat, lng=n.lng))
+        return out
 
     def close(self) -> None:
         pass
