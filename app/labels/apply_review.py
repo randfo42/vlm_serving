@@ -130,9 +130,10 @@ def run(paths: ds.DatasetPaths) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--config", default=None, help="trailwalk.yaml 오버레이")
     ds.add_argument(ap)
     a = ap.parse_args()
-    st = settings_mod.load()
+    st = settings_mod.load(a.config)
     return run(ds.resolve(a.dataset or st.labels.dataset))
 
 

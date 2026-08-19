@@ -109,8 +109,11 @@ def main() -> int:
         c = parse_course(get(BASE + href))
         # "추천1코스 : 인왕산숲길" → 종별/이름 분리
         kind, _, name = (p.strip() for p in label.partition(":"))
+        # gu 를 실어 보낸다. 지오코딩의 첫 경유지 바이어스가 자치구청 좌표를
+        # 쓰는데, 이 필드가 없으면 서울시청으로 폴백해 과거 실행과 후보 집합이
+        # 달라진다 (재현성). 이 페이지는 종로구청이 만든다.
         c = {"course_id": f"jongno-{i:02d}", "kind": kind, "name": name,
-             "url": BASE + href, **c}
+             "gu": "종로구", "url": BASE + href, **c}
         for k in ("route_text", "distance_km", "duration"):
             if c[k] is None:
                 missing += 1

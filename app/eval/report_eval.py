@@ -145,8 +145,9 @@ def main() -> int:
 
     fails = [p for p in probes if p["is_trail"] != p["label"]]
     if fails:
+        root = header.get("images_root") or "<라벨 파일 옆 images/>"
         print(f"\n오판 {len(fails)}건 중 앞 {min(a.fails, len(fails))}건 "
-              f"(app/labels/jongno/images/ 기준):")
+              f"({root} 기준):")
         for p in fails[:a.fails]:
             img = images.get(p["sample_id"], "?")
             print(f"  {p['sample_id']:>16} 정답={p['label']} 판정={p['is_trail']} "

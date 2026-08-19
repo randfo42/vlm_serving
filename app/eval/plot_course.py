@@ -155,27 +155,38 @@ def render(course: dict, samples: list[dict], with_map: bool = True) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("geom", help="courses_geom.json 경로")
+    ap.add_argument("geom", nargs="?", default=None,
+                    help="courses_geom.json 경로 (--dataset 를 주면 생략 가능)")
     ap.add_argument("course_id", help="예: jongno-01, 또는 all")
     ap.add_argument("--samples", default=None, help="samples.jsonl 을 겹쳐 그린다")
     ap.add_argument("-o", "--out", default=None,
                     help="SVG 경로 (all 이면 디렉터리). 기본: geom 옆 svg/")
     ap.add_argument("--no-map", action="store_true", help="타일 배경 없이 (오프라인)")
     ap.add_argument("--dataset", default=None,
-                    help="geom 대신 데이터셋 이름으로 경로를 잡는다")
+                    help="geom 대신 데이터셋 이름으로 경로를 잡는다 "
+                         "(app/labels/<이름>/courses_geom.json)")
     a = ap.parse_args()
 
-    data = json.loads(Path(a.geom).read_text(encoding="utf-8"))
+    if not a.geom and not a.dataset:
+        print("geom 경로나 --dataset 중 하나는 줘야 한다", file=sys.stderr)
+        return 1
+    geom_path = Path(a.geom) if a.geom else (
+        Path(__file__).resolve().parent.parent / "labels" / a.dataset
+        / "courses_geom.json")
+    samples_path = Path(a.samples) if a.samples else (
+        None if a.geom else geom_path.parent / "samples.jsonl")
+    data = json.loads(geom_path.read_text(encoding="utf-8"))
     courses = {c["course_id"]: c for c in data["courses"]}
     targets = list(courses) if a.course_id == "all" else [a.course_id]
     outdir = Path(a.out) if (a.out and a.course_id == "all") \
-        else Path(a.geom).parent / "svg"
+        else geom_path.parent / "svg"
 
     for cid in targets:
         if cid not in courses:
             print(f"모르는 코스 {cid}. 있는 것: {', '.join(courses)}", file=sys.stderr)
             return 1
-        samples = load_samples(Path(a.samples), cid) if a.samples else []
+        samples = load_samples(samples_path, cid) \
+            if samples_path and samples_path.exists() else []
         svg = render(courses[cid], samples, with_map=not a.no_map)
         if a.out and a.course_id != "all":
             out = Path(a.out)

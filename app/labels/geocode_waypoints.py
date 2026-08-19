@@ -14,10 +14,15 @@ Kakao 로컬 키워드 검색으로 경유지 이름을 좌표로 바꾼다.
 2. **연속 경유지 거리 새너티** — 이웃 경유지가 2km 넘게 떨어지면 경고.
    산책 코스 경유지가 2km 이상 벌어질 리 없다 (코스 전체가 2~4km 다).
 
-### 실패는 사람이 메운다
+### 실패는 사람이 메운다 — 다만 전체를 막지는 않는다
 
-검색이 안 되는 이름("이빨바위")은 status=missing 으로 남고 종료코드 1.
-`overrides.json` 에 좌표를 넣고 재실행한다 (멱등):
+검색이 안 되는 이름("이빨바위")은 `status: missing` 으로 남는다.
+**종료코드는 0 이다** — 817경유지 규모에서 한 건 실패로 파이프라인을 세우면
+아무것도 못 한다. 대신 코스 단위로 격리한다: 지오코딩된 경유지가 2개 미만이면
+그 코스만 `incomplete`, 절반 넘게 딴 자치구에 잡히면 `suspect_geocode` 로
+빠지고 라우팅이 건너뛴다. 종료코드 1 은 **쓸 수 있는 코스가 하나도 없을 때**만.
+
+살리려면 `overrides.json` 에 좌표를 넣고 재실행한다 (멱등):
 
     {"jongno-01/이빨바위": {"lat": 37.5, "lng": 126.9, "note": "카카오맵에서 수동"},
      "jongno-03/혜화문":   {"skip": true, "note": "경유지에서 제외"}}
@@ -308,6 +313,10 @@ def main() -> int:
               f"먼저 확인할 것", file=sys.stderr)
     n_use = sum(1 for c in out_courses if c["status"] == "ok")
     print(f"쓸 수 있는 코스 {n_use}/{len(out_courses)} · 경유지 missing {n_missing}")
+    if n_use == 0:
+        print("✗ 쓸 수 있는 코스가 하나도 없다 — 파서나 키를 먼저 확인할 것",
+              file=sys.stderr)
+        return 1
     if n_incomplete:
         print(f"제외 {n_incomplete}코스 (incomplete=경유지 2개 미만, "
               f"suspect_geocode=절반 넘게 딴 자치구). 살리려면 overrides.json 을 "
