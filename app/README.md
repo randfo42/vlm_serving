@@ -23,12 +23,22 @@ cd .. && ./configs/smoke.sh
 
 `fixture` provider 가 로컬 이미지를 로드뷰인 척 돌려준다.
 
+설정은 `app/config/trailwalk.yaml` 하나에 다 있다. **CLI 인자는 `--config`
+하나뿐이다** (→ 루트 `CLAUDE.md` "설정"). 기본 설정이 이미 fixture 라 그냥 돌리면 된다.
+
 ```bash
 pip install -r app/requirements.txt
-python app/run_walk.py --provider fixture --start 37.5665,126.9780 --bearing 90 --steps 6
+python app/run_walk.py
 
 # 갈래를 전부 도는 분기 탐색은 이쪽 (docs/20-app-design.md §3.5)
-python app/run_explore.py --provider fixture --start 37.5665,126.9780 --max-calls 12
+python app/run_explore.py
+```
+
+값을 바꾸려면 설정을 복사해서 고친다:
+
+```bash
+cp app/config/trailwalk.yaml app/config/my.yaml   # start·예산·프롬프트를 고치고
+python app/run_walk.py --config app/config/my.yaml
 ```
 
 기대 출력:
@@ -39,9 +49,10 @@ python app/run_explore.py --provider fixture --start 37.5665,126.9780 --max-call
 ```
 
 스텝보다 호출이 많은 것이 정상이다 — fixture 의 격자 그래프는 갈림길마다
-후보가 3개이고, 기본값이 "후보를 전부 묻기" 다 (`--first-hit` 로 바꿀 수 있다).
+후보가 여러 개이고, 기본값이 "후보를 전부 묻기" 다.
+첫 성공에서 멈추려면 설정에서 `candidates.probe_all: false`.
 
-첫 호출이 13초쯤 걸리면 정상이다 (콜드 스타트). `--warmup` 으로 측정 밖으로 뺀다.
+첫 호출이 13초쯤 걸리면 정상이다 (콜드 스타트). `run.warmup: true` 로 측정 밖으로 뺀다.
 
 ### 3. 실제 로드뷰 — ✅ 검증됨 (2026-08-17)
 
@@ -56,8 +67,9 @@ cp app/.env.example app/.env      # 값을 채운다
 playwright install chromium
 
 python app/check_kakao.py         # ← 먼저 이것. 진단 전용, VLM 불필요
-python app/run_walk.py --provider kakao \
-    --start 37.5768,127.0246 --bearing 90 --steps 20 --headed
+
+# 설정에서 provider: kakao, start: [37.5768, 127.0246], headed: true 로 고친 뒤
+python app/run_walk.py --config app/config/my.yaml
 ```
 
 `check_kakao.py` 는 서울 좌표 6곳(**차도 대조군 포함**)에서 pano 가 잡히는지,
@@ -81,7 +93,7 @@ python app/check_fov.py            # zoom 0 화각 측정 + 스윕 이미지 15�
 > "로드뷰가 안 뜬다" 로만 보여서 커버리지 문제로 오인하기 쉽다.
 > 그리고 플랫폼 > Web > 사이트 도메인에 `http://127.0.0.1:8731` 을 등록해야 한다.
 
-`--headed` 로 시작한다. 완전 headless 에서 WebGL 이 안 그려져 검은 화면이 찍히는
+`run.headed: true` 로 시작한다. 완전 headless 에서 WebGL 이 안 그려져 검은 화면이 찍히는
 경우가 있고, 그러면 원인을 로드뷰 커버리지로 오인하기 쉽다.
 
 **먼저 `docs/23-open-questions.md` §1 을 읽을 것.**
@@ -133,12 +145,12 @@ for l in open(sys.argv[1]):
 
 ### 판정을 눈으로 감사한다
 
-`--save-images` 를 켜면 probe 이미지가 `runs/images/<런이름>/` 에 쌓이고,
+`run.save_images: true` 로 켜면 probe 이미지가 `runs/images/<런이름>/` 에 쌓이고,
 런로그의 각 probe 줄에 `image` 필드로 파일명이 붙는다.
 
 ```bash
-python app/run_explore.py --provider kakao --start 37.5695,127.0050 \
-    --max-calls 40 --save-images
+# 설정에서 provider: kakao, save_images: true
+python app/run_explore.py --config app/config/my.yaml
 # runs/images/<런이름>/001_s00_1039598318_091.4_T.png
 #                     ↑순서 ↑depth ↑pano   ↑방위  ↑판정
 ```
@@ -148,12 +160,12 @@ python app/run_explore.py --provider kakao --start 37.5695,127.0050 \
 
 ### explore 결과를 지도 위에서 본다
 
-`run_explore.py --dump` 가 낸 JSON 을 SVG 한 장으로 만든다. 배경은 OSM 타일을
+`run.dump` 로 낸 JSON 을 SVG 한 장으로 만든다. 배경은 OSM 타일을
 base64 로 내장하므로 파일 하나로 자족적이다 (오프라인이면 `--no-map`).
 
 ```bash
-python app/run_explore.py --provider kakao --start 37.5695,127.0050 \
-    --max-calls 40 --dump /tmp/explore.json
+# 설정에서 provider: kakao, dump: /tmp/explore.json
+python app/run_explore.py --config app/config/my.yaml
 python app/eval/plot_explore.py /tmp/explore.json -o /tmp/explore.svg
 ```
 

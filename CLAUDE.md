@@ -25,6 +25,30 @@ app 작업을 할 때 서빙 내부 문서·코드를 열지 않는다. 그 반�
 과잉 차단은 사람이 훅을 끄게 만든다 — `block-secret-reads` 1판에서 이미 치른
 수업료다 (`docs/12-harness.md` §4).
 
+## 설정 — 기본값은 `app/config/trailwalk.yaml` 한 곳뿐이다
+
+app 쪽 기본값은 **전부** 이 파일에 있다. 다른 데 적지 않는다.
+
+- dataclass 필드에 기본값을 주지 않는다 (`WalkConfig`/`ExploreConfig` 는
+  `from_settings()` 로만 만든다). 주면 정본이 둘이 되고, 어느 쪽이 먹는지
+  코드를 읽어야 알게 된다.
+- `argparse` 의 `default=` 를 쓰지 않는다. **CLI 인자는 `--config` 하나뿐이다.**
+  런 하나를 재현하려면 그 설정 파일 하나만 있으면 된다.
+- 모듈 상수(`imaging.TARGET_SIZE` 등)는 남겨도 되지만 **값은 settings 에서
+  읽는 별칭**이어야 하고, 근거 주석은 YAML 쪽에 둔다.
+- 값 옆에 **왜 그 값인가**를 적는다. 못 적겠으면 정해진 값이 아니라 아직 안
+  정한 값이다 — 그렇게 적어 둔다.
+
+값을 바꿔 돌리려면 파일을 복사해서 고치고 `--config` 로 넘긴다.
+
+왜 이렇게 하나: 같은 개념이 dataclass·CLI·모듈 상수 세 곳에 흩어져 있었고
+값이 서로 어긋나 있었다 (`max_candidates` 가 walk 3 / explore 4, `max_turn_deg`
+가 walk 120 / explore 180 = 무효, `expand_non_trail` 은 기본을 뒤집어 놓고
+되돌릴 CLI 수단이 없었다). 어느 값이 실제로 먹는지 알려면 코드를 다 읽어야 했다.
+
+비밀값은 여기 없다. API 키는 `app/.env` + `trailwalk/config.py` 다 —
+`trailwalk.yaml` 은 커밋되므로 키를 적으면 저장소에 그대로 남는다.
+
 ## 하네스
 
 ```
