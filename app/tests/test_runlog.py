@@ -19,7 +19,8 @@ def _verdict(is_trail=True):
 def _probe(log, **kw):
     log.probe(step=kw.pop("step", 0), pano_id=kw.pop("pano_id", "P1"),
               lat=37.5, lng=127.0, heading=kw.pop("heading", 90.0),
-              verdict=kw.pop("verdict", _verdict()), src_format="PNG", **kw)
+              verdict=kw.pop("verdict", _verdict()),
+              src_format=kw.pop("src_format", "PNG"), **kw)
 
 
 def _rows(path):
@@ -64,6 +65,16 @@ def test_같은_pano_를_여러_방위로_찍어도_안_덮어쓴다(tmp_path):
         for h in (30.0, 90.0, 150.0):
             _probe(log, pano_id="SAME", heading=h, image=f"img{h}".encode())
     assert len(list(imgs.glob("*.png"))) == 3
+
+
+def test_확장자는_주장이_아니라_감지된_포맷을_따른다(tmp_path):
+    """fixture 는 JPEG 원본을 그대로 준다. .png 로 찍으면 이름과 바이트가
+    어긋난 파일이 생긴다 — 이 레포가 경계하는 실패 유형 그대로다."""
+    out, imgs = tmp_path / "r.jsonl", tmp_path / "imgs"
+    with RunLog(out, {}, image_dir=imgs) as log:
+        _probe(log, image=b"\xff\xd8-fake", src_format="JPEG")
+    probe = next(r for r in _rows(out) if r["type"] == "probe")
+    assert probe["image"].endswith(".jpg")
 
 
 def test_이미지_없이_켜져_있어도_깨지지_않는다(tmp_path):

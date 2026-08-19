@@ -44,9 +44,13 @@ class RunLog:
         self._n += 1
         name = None
         if self.image_dir and image:
+            # 확장자는 주장이 아니라 감지된 실제 포맷(src_format)을 따른다.
+            # kakao 는 PNG 스크린샷이지만 fixture 는 JPEG 원본을 그대로 준다 —
+            # 전부 .png 로 찍으면 이름과 바이트가 어긋난 파일이 생긴다.
+            ext = {"JPEG": "jpg", "PNG": "png", "WEBP": "webp"}.get(src_format, "bin")
             # 번호를 앞에 둔다 — 파일 이름순이 곧 호출 순서라 판정을 따라가며 볼 수 있다.
             name = f"{self._n:03d}_s{step:02d}_{pano_id}_{heading:05.1f}_" \
-                   f"{'T' if verdict.is_trail else 'F'}.png"
+                   f"{'T' if verdict.is_trail else 'F'}.{ext}"
             (self.image_dir / name).write_bytes(image)
         self._write({
             "type": "probe", "step": step,
