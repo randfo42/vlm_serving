@@ -195,7 +195,7 @@ python app/eval/plot_explore.py /tmp/explore.json -o /tmp/explore.svg
 | 5 | **동시 요청 금지.** 순차만. 병렬은 서빙 쪽 문제 | `../docs/04-b1-results.md` §4 |
 | 6 | **이웃 pano 그래프로만 걷는다.** 좌표를 밀어 이동하던 폴백은 없앴다 | `20-app-design.md` §3 |
 | 7 | **500 연속 3회면 재시도를 멈춘다.** 자체 복구 안 됨 | `../docs/11-server-ops.md` §5 |
-| 8 | **코스 폴리라인이 아직 없다.** 정량 평가의 구멍 | `22-labels.md` §2 |
+| 8 | **라벨 세트가 양성 전용이다.** 재현율만 나오고 precision·ROC 는 정의되지 않는다 | `22-labels.md` §4 |
 | 9 | **차량 촬영 pano 와 도보 촬영 pano 는 그래프로 안 이어져 있다.** 시작점이 어느 계열에 스냅되느냐가 결과를 가른다 | `23-open-questions.md` §7 |
 | 10 | **화각은 provider 가 정한다.** kakao 는 90.9° 고정, fixture 는 사진마다 다르다 — 둘을 화각 축에서 비교하지 말 것 | `23-open-questions.md` §3 |
 | 11 | **판정은 *지점*, 캡처는 *방향*이다.** 축 밖 뷰를 정확도 표에 섞지 말 것 | `23-open-questions.md` §6 |
