@@ -37,6 +37,7 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+from ..settings import SETTINGS
 from .base import Neighbor, Pano, ProviderError
 
 # 기본 뷰포트. 16:9 — imaging.TARGET_SIZE 와 맞춰 리사이즈를 무해하게.
@@ -46,7 +47,9 @@ from .base import Neighbor, Pano, ProviderError
 # docs/23-open-questions.md §3). 그런데 이 숫자는 화각을 보고 고른 것이 아니라
 # **이미지 토큰을 264 로 고정하려고** TARGET_SIZE 에 맞춘 것이다. 즉 지금의 화각은
 # 토큰 예산 결정의 부산물이다. 바꾸면 화각과 토큰 수가 같이 움직인다.
-VIEW_W, VIEW_H = 1280, 720
+# 값의 정본은 app/config/trailwalk.yaml 의 image.target_size 다 — 뷰포트와
+# 이미지 크기를 **한 값**으로 묶어야 리사이즈가 무해하고 화각이 안 미끄러진다.
+VIEW_W, VIEW_H = SETTINGS.image.target_size
 
 # SDK 가 pano 를 띄울 때 스스로 치는 내부 JSON 엔드포인트.
 # 우리는 **추가 요청을 보내지 않고 응답만 가로챈다** (→ neighbors()).
@@ -54,11 +57,13 @@ NODE_API_MARK = "roadview-search/v2/node/"
 
 # 프레임 안정화 (→ capture()). 조건이 둘이다: 타일 요청이 끊기고, 그다음
 # 연속 N 프레임이 동일할 것. 하나만으로는 반쯤 로드된 그림이 통과한다.
-TILE_QUIET_MS = 250          # 타일 요청이 이만큼 없으면 로딩이 끝난 것으로 본다
-TILE_WAIT_MAX_MS = 5000      # 그래도 안 끊기면 포기하고 프레임 비교로 넘어간다
-RENDER_SETTLE_MS = 120
-RENDER_SETTLE_STABLE = 3     # 연속 몇 프레임이 같아야 안정으로 볼지
-RENDER_SETTLE_TRIES = 12
+# 값의 정본은 app/config/trailwalk.yaml 의 kakao 구획이다 (근거도 그쪽).
+# 생성자에서 덮어쓸 수 있다 — 느린 회선에서 대기를 늘려 볼 수 있게.
+TILE_QUIET_MS = SETTINGS.kakao.tile_quiet_ms
+TILE_WAIT_MAX_MS = SETTINGS.kakao.tile_wait_max_ms
+RENDER_SETTLE_MS = SETTINGS.kakao.render_settle_ms
+RENDER_SETTLE_STABLE = SETTINGS.kakao.render_settle_stable
+RENDER_SETTLE_TRIES = SETTINGS.kakao.render_settle_tries
 
 SDK_URL = "https://dapi.kakao.com/v2/maps/sdk.js?appkey={key}&autoload=false"
 
@@ -242,9 +247,29 @@ class KakaoProvider:
     _tile_timeouts = 0
     _sniff_error: str | None = None
 
-    def __init__(self, appkey: str, *, host: str = "127.0.0.1", port: int = 8731,
-                 headless: bool = True, hide_arrows: bool = False,
-                 view_w: int = VIEW_W, view_h: int = VIEW_H):
+    # 대기 상수의 클래스 기본값. __init__ 이 settings 로 덮어쓴다.
+    # 클래스에도 두는 이유는 __init__ 을 건너뛰고 만들어지는 인스턴스가 있기
+    # 때문이다 (테스트가 브라우저 없이 _settle 만 돌린다 → test_kakao_settle.py).
+    tile_quiet_ms = TILE_QUIET_MS
+    tile_wait_max_ms = TILE_WAIT_MAX_MS
+    render_settle_ms = RENDER_SETTLE_MS
+    render_settle_stable = RENDER_SETTLE_STABLE
+    render_settle_tries = RENDER_SETTLE_TRIES
+
+    def __init__(self, appkey: str, *, host: str | None = None, port: int | None = None,
+                 headless: bool | None = None, hide_arrows: bool | None = None,
+                 view_w: int | None = None, view_h: int | None = None, settings=None):
+        # 인자 기본값을 None 으로 두고 settings 에서 채운다. 모듈 상수를 시그니처에
+        # 박아 두면 `KakaoProvider(key, settings=custom)` 이 정본 뷰포트로 찍고,
+        # 그러면 화각이 image.target_size 와 어긋난 채 조용히 돈다.
+        st = settings or SETTINGS
+        k = st.kakao
+        host = host if host is not None else k.host
+        port = port if port is not None else k.port
+        headless = headless if headless is not None else not st.run.headed
+        hide_arrows = hide_arrows if hide_arrows is not None else k.hide_arrows
+        view_w = view_w if view_w is not None else st.image.target_size[0]
+        view_h = view_h if view_h is not None else st.image.target_size[1]
         if not appkey:
             raise ProviderError(
                 "Kakao JS 앱키가 없다. 개발자 콘솔에서 발급하고 플랫폼 > Web 에 "
@@ -255,6 +280,14 @@ class KakaoProvider:
             raise ProviderError(
                 "playwright 가 없다:\n"
                 "  pip install -r app/requirements.txt && playwright install chromium") from e
+
+        # 대기 상수는 인스턴스에 둔다. 모듈 상수를 직접 읽으면 --config 로 다른
+        # 설정을 준 런이 정본 값을 조용히 쓰게 된다.
+        self.tile_quiet_ms = k.tile_quiet_ms
+        self.tile_wait_max_ms = k.tile_wait_max_ms
+        self.render_settle_ms = k.render_settle_ms
+        self.render_settle_stable = k.render_settle_stable
+        self.render_settle_tries = k.render_settle_tries
 
         # 뷰포트는 페이지 CSS 와 브라우저 viewport 양쪽에 박힌다. 둘이 어긋나면
         # 스크롤바가 생기거나 캔버스가 잘려서 화각이 조용히 달라진다.
@@ -315,10 +348,10 @@ class KakaoProvider:
         계속 뭔가를 받아오는 상황에서 런이 멈추면 안 된다. 다만 신호는 남긴다
         (→ _settle 이 이벤트로 올린다). 이게 잦으면 상수를 의심할 것.
         """
-        deadline = time.monotonic() + TILE_WAIT_MAX_MS / 1000
+        deadline = time.monotonic() + self.tile_wait_max_ms / 1000
         while time.monotonic() < deadline:
             quiet = time.monotonic() - self._last_net
-            if self._inflight == 0 and quiet >= TILE_QUIET_MS / 1000:
+            if self._inflight == 0 and quiet >= self.tile_quiet_ms / 1000:
                 return True
             self._page.wait_for_timeout(50)   # 이벤트 루프를 돌려 콜백을 받는다
         self._tile_timeouts += 1
@@ -460,12 +493,12 @@ class KakaoProvider:
             self._emit("tiles_timeout", pano_id=pano_id)
         prev = self._page.locator("#rv").screenshot(type="png")
         same = 1
-        for _ in range(RENDER_SETTLE_TRIES):
-            self._page.wait_for_timeout(RENDER_SETTLE_MS)
+        for _ in range(self.render_settle_tries):
+            self._page.wait_for_timeout(self.render_settle_ms)
             cur = self._page.locator("#rv").screenshot(type="png")
             same = same + 1 if cur == prev else 1
             prev = cur
-            if same >= RENDER_SETTLE_STABLE:
+            if same >= self.render_settle_stable:
                 return cur
         # 끝내 안 멎었다. 마지막 프레임을 쓰되 조용히 넘기지는 않는다 — 런로그
         # 이벤트와 카운터 둘 다에 남긴다. 반쯤 로드된 프레임이 판정을 뒤집은

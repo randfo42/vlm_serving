@@ -10,9 +10,12 @@ VLM 도 브라우저도 없이 돈다. 여기서 검증하는 것은 판정 **�
   전자를 후자처럼 다루면 로드뷰에 없는 길을 걸어간 것처럼 보인다
 - 갈림길에서 하나만 따라가되 나머지를 버리지 않는다
 """
+from dataclasses import replace
+
 import pytest
 
 from conftest import make_image
+from trailwalk import settings
 from trailwalk.providers.base import Neighbor, Pano, ProviderError
 from trailwalk.walk import WalkConfig, walk
 
@@ -73,8 +76,14 @@ def nb(pano_id, heading, lat=37.5, lng=127.0):
 
 
 def run(provider, verdicts, bearing=90.0, **cfg):
+    """정본 설정에서 출발해 인자로 준 것만 덮어쓴다.
+
+    기본값을 여기 다시 적지 않는 것이 요점이다 — 테스트가 자기만의 기본값을
+    들고 있으면 설정 파일을 바꿔도 테스트는 예전 값으로 계속 통과한다.
+    """
     client = Client(provider, verdicts)
-    return walk(provider, client, (37.5, 127.0), bearing, WalkConfig(**cfg))
+    base = WalkConfig.from_settings(settings.SETTINGS)
+    return walk(provider, client, (37.5, 127.0), bearing, replace(base, **cfg))
 
 
 # ── 그래프 순회 ─────────────────────────────────────────────────────────────
@@ -124,15 +133,21 @@ def test_그래프_이동은_다시_스냅하지_않는다():
     assert p.nearest_calls == 1
 
 
-def test_많이_꺾이는_이웃은_후보에서_뺀다():
-    """U턴 방지. 뒤로 도는 것은 '다른 길' 이 아니라 온 길이다.
+def test_온_길은_각도가_아니라_pano_id로_빠진다():
+    """U턴 방지로 max_turn_deg(120°)를 걸었었다. 지웠다.
 
-    **시작 노드가 아닌 곳에서만** 건다 — 시작 노드는 아래 참조.
+    온 길은 came_from 이 **pano_id 로 정확히** 빼므로 각도 필터가 할 일이
+    없었다. 게다가 `turnable or fresh` 폴백 때문에 하드 필터도 아니었다 —
+    전멸하면 통째로 무시됐다. explore 는 이미 180(=필터 없음)으로 돌았다.
+
+    그래서 크게 꺾이는 **다른** 이웃은 이제 후보에 남는다. 골목이 예각으로
+    갈라지는 곳에서 멀쩡한 갈래를 각도만 보고 지우지 않는다.
     """
     p = Provider({"S": [nb("A", 90.0)],
                   "A": [nb("S", 270.0), nb("B", 90.0), nb("SHARP", 220.0)]})
-    run(p, {("S", 90.0): True, ("A", 90.0): True}, max_steps=2, max_turn_deg=120.0)
-    assert ("A", 220.0) not in p.probes, "130° 꺾이는 이웃을 물었다"
+    run(p, {("S", 90.0): True, ("A", 90.0): True}, max_steps=2)
+    assert ("A", 270.0) not in p.probes, "온 길(S)을 다시 물었다"
+    assert ("A", 220.0) in p.probes, "130° 꺾이는 이웃이 각도만으로 사라졌다"
 
 
 # ── 시작 노드 ───────────────────────────────────────────────────────────────
@@ -144,11 +159,11 @@ def test_시작점은_모든_이웃을_묻는다():
 
     청계천 이웃은 동 91.4°/서 267.8° 인데 `--bearing 45` 를 주면 서쪽이
     137° 로 max_turn_deg(120°)에 걸려 **아예 안 물어봤다.** frontier 에도
-    안 남아서 흔적이 없었다. 시작 노드에는 "온 길" 이 없으므로 U턴 필터가
-    걸릴 이유가 없다.
+    안 남아서 흔적이 없었다. 그 각도 필터는 이제 없지만(→ 위 테스트), 시작
+    노드가 bearing 과 무관하게 전부 묻는다는 불변식은 그대로 지킨다.
     """
     p = Provider({"S": [nb("E", 91.4), nb("W", 267.8)], "E": [], "W": []})
-    run(p, {("S", 91.4): True}, bearing=45.0, max_steps=1, max_turn_deg=120.0)
+    run(p, {("S", 91.4): True}, bearing=45.0, max_steps=1)
     assert {h for _, h in p.probes} == {91.4, 267.8}, f"방향이 사라졌다: {p.probes}"
 
 
@@ -374,7 +389,39 @@ def test_같은_pano를_두_번_밟지_않는다():
                   "A": [nb("S", 270.0), nb("B", 180.0)],
                   "B": [nb("S", 0.0), nb("A", 0.0)]})
     res = run(p, {("S", 90.0): True, ("A", 180.0): True, ("B", 0.0): True},
-              max_steps=50, max_turn_deg=180.0)
+              max_steps=50)
     stepped = [row["pano_id"] for row in res.path]
     assert len(stepped) == len(set(stepped)), f"같은 pano 를 다시 밟았다: {stepped}"
     assert res.stop_reason == "dead_end"
+
+
+def test_호출_예산은_후보마다_걸린다():
+    """⚠️ 리뷰 회귀. 예산을 스텝 경계에서만 보면 하드 캡이 아니다.
+
+    시작 노드는 max_candidates 슬라이싱도 안 받으므로(_candidates 의
+    came_from is None 분기), 이웃이 4개면 max_vlm_calls=1 이어도 4번 부르고
+    나서야 멈췄다. "실질 상한은 호출 수" 라는 주석이 사실이 아니었다.
+    """
+    p = Provider({"S": [nb("A", 0.0), nb("B", 90.0), nb("C", 180.0), nb("D", 270.0)]})
+    res = run(p, {}, bearing=0.0, max_vlm_calls=1)     # 정면이 A 가 되게
+    assert res.calls == 1
+    assert p.probes == [("S", 0.0)]
+    assert res.stop_reason == "call_budget"
+    # 못 물은 후보는 버리지 않는다 — 판정을 안 받았을 뿐 갈래는 갈래다
+    assert {f["pano_id"] for f in res.frontier} == {"B", "C", "D"}
+
+
+def test_예산_컷에서_이미_확인한_산책로를_버리지_않는다():
+    """⚠️ 리뷰 회귀. 호출을 써서 얻은 판정이 로그 어디에도 안 남던 자리다.
+
+    후보 순회 중간에 예산이 끊기면, 아직 안 물어본 후보만 frontier 로 가고
+    **이미 True 로 확인된 갈래는 증발**했다. path 에도 안 남는다(스텝을
+    마무리하지 않으므로). frontier 의 계약이 "산책로인데 안 간 갈래" 다.
+    """
+    p = Provider({"S": [nb("A", 0.0), nb("B", 90.0), nb("C", 180.0)]})
+    res = run(p, {("S", 0.0): True}, bearing=0.0, max_vlm_calls=1)
+    assert res.calls == 1
+    assert res.stop_reason == "call_budget"
+    ids = {f["pano_id"] for f in res.frontier}
+    assert "A" in ids, "산책로로 확인된 갈래가 사라졌다"
+    assert {"B", "C"} <= ids, "안 물어본 갈래가 사라졌다"

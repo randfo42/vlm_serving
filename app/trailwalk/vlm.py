@@ -19,15 +19,15 @@ import urllib.request
 from dataclasses import dataclass, field
 
 from . import prompt as P
-from .imaging import MIN_PROMPT_TOKENS
+from .settings import SETTINGS
 
-DEFAULT_URL = "http://127.0.0.1:8080/v1/chat/completions"
-MAX_TOKENS = 60
-TIMEOUT_S = 180
-
-# 500 이 이만큼 연속되면 Metal OOM 좀비 상태로 보고 멈춘다. 자체 복구되지 않으므로
-# 재시도는 무의미하고, 계속 두드리면 실패 로그만 쌓인다. → docs/11-server-ops.md §5
-FATAL_500_STREAK = 3
+# 값의 정본은 app/config/trailwalk.yaml 이다 (근거 주석도 그쪽에 있다).
+# VlmClient 는 생성자에서 settings 를 받아 인스턴스 속성으로 쓰므로,
+# 아래 별칭은 "설정을 안 넘겼을 때의 기본" 자리에서만 쓰인다.
+DEFAULT_URL = SETTINGS.vlm.url
+MAX_TOKENS = SETTINGS.vlm.max_tokens
+TIMEOUT_S = SETTINGS.vlm.timeout_s
+FATAL_500_STREAK = SETTINGS.vlm.fatal_500_streak
 
 
 class VlmError(RuntimeError):
@@ -64,9 +64,25 @@ class Stats:
 
 
 class VlmClient:
-    def __init__(self, url: str = DEFAULT_URL, schema_name: str = "walk",
-                 system_version: str = P.DEFAULT_VERSION):
-        self.url = url
+    def __init__(self, url: str | None = None, schema_name: str | None = None,
+                 system_version: str | None = None, settings=None):
+        # settings 를 안 주면 정본을 쓴다. 인자로 받아 두는 이유는 --config 로
+        # 다른 설정을 준 런이 모듈 상수(=정본)를 조용히 쓰면 안 되기 때문이다.
+        #
+        # 인자 기본값을 None 으로 두는 것이 요점이다. `url=DEFAULT_URL` 처럼
+        # 모듈 상수를 박아 두면 settings 만 넘긴 호출이 옛 URL 로 요청을 보내고
+        # 에러도 안 난다 — 호출부가 매번 같이 넘겨 우회하고 있을 뿐인 함정이다.
+        s = settings or SETTINGS
+        self.url = url if url is not None else s.vlm.url
+        schema_name = schema_name if schema_name is not None else s.vlm.schema
+        system_version = (system_version if system_version is not None
+                          else s.vlm.prompt_version)
+        self.max_tokens = s.vlm.max_tokens
+        self.timeout_s = s.vlm.timeout_s
+        self.fatal_500_streak = s.vlm.fatal_500_streak
+        # 이미지 무시(WEBP 사고)를 잡는 유일한 신호. 모듈 상수로 읽으면
+        # --config 로 expected_image_tokens 를 바꾼 런이 옛 하한을 쓴다
+        self.min_prompt_tokens = s.image.min_prompt_tokens
         self.schema_name = schema_name
         self.schema = P.SCHEMAS[schema_name]
         # 클라이언트 수명 내내 같은 문자열을 재사용한다. 요청마다 다시 읽으면
@@ -82,7 +98,7 @@ class VlmClient:
             self.url, data=json.dumps(body).encode(),
             headers={"Content-Type": "application/json"})
         t0 = time.perf_counter()
-        with urllib.request.urlopen(req, timeout=TIMEOUT_S) as r:
+        with urllib.request.urlopen(req, timeout=self.timeout_s) as r:
             payload = json.load(r)
         return payload, (time.perf_counter() - t0) * 1000
 
@@ -97,7 +113,7 @@ class VlmClient:
             ],
             "response_format": {"type": "json_schema", "json_schema": {
                 "name": "trail", "schema": self.schema, "strict": True}},
-            "max_tokens": MAX_TOKENS,
+            "max_tokens": self.max_tokens,
             "temperature": 0,
         }
         return self._post(body)
@@ -123,7 +139,7 @@ class VlmClient:
                     continue
                 if e.code == 500:
                     self._streak_500 += 1
-                    if self._streak_500 >= FATAL_500_STREAK:
+                    if self._streak_500 >= self.fatal_500_streak:
                         raise ServerDeadError(
                             f"500 이 {self._streak_500}회 연속. Metal OOM 좀비 상태로 보인다.\n"
                             f"  /health 는 200 을 돌려주지만 거짓이다. 재시작이 유일한 해결책:\n"
@@ -156,9 +172,9 @@ class VlmClient:
         # ── 이 순서가 중요하다: 내용을 보기 전에 이미지가 들어갔는지 먼저 본다.
         # 이미지가 무시되면 모델은 그럴듯한 JSON 을 만들어낸다. 파싱은 성공하고
         # 값은 순전한 환각이다. prompt_tokens 만이 이걸 잡아낸다 (§2.1).
-        if pt < MIN_PROMPT_TOKENS:
+        if pt < self.min_prompt_tokens:
             raise ImageIgnoredError(
-                f"prompt_tokens={pt} (기대 {MIN_PROMPT_TOKENS}+). 이미지가 무시됐다.\n"
+                f"prompt_tokens={pt} (기대 {self.min_prompt_tokens}+). 이미지가 무시됐다.\n"
                 f"  거의 확실히 WEBP 를 보냈다 — 서버는 200 을 주고 로그도 남기지 않는다.\n"
                 f"  imaging.py 를 거치지 않은 data URI 가 있는지 확인할 것.")
 

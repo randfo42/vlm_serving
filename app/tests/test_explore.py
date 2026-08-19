@@ -12,16 +12,21 @@ test_walk.py 와 같은 원칙이다: VLM 도 브라우저도 없이, 판정 **�
 - 예산(depth/호출)에 걸린 갈래는 사라지지 않고 frontier 에 남는다
 - 한 갈래의 no_coverage 가 탐색 전체를 멈추지 않는다 (walk 와 다른 점)
 """
+from dataclasses import replace
+
 import pytest
 from test_walk import Client, Provider, nb
 
+from trailwalk import settings
 from trailwalk.explore import ExploreConfig, explore
 from trailwalk.providers.base import ProviderError
 
 
 def run(provider, verdicts, bearing=0.0, **cfg):
+    """정본 설정에서 출발해 인자로 준 것만 덮어쓴다 (test_walk.run 과 같은 이유)."""
     client = Client(provider, verdicts)
-    return explore(provider, client, (37.5, 127.0), bearing, ExploreConfig(**cfg))
+    base = ExploreConfig.from_settings(settings.SETTINGS)
+    return explore(provider, client, (37.5, 127.0), bearing, replace(base, **cfg))
 
 
 # ── 시작 노드 ───────────────────────────────────────────────────────────────

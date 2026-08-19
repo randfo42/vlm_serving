@@ -22,16 +22,20 @@
 import hashlib
 from pathlib import Path
 
+from ..settings import SETTINGS
 from .base import Neighbor, Pano, ProviderError
 
-GRID_M = 10.0          # 가짜 pano 격자 간격 (m)
+# 값의 정본은 app/config/trailwalk.yaml (fixture.grid_m). 여기 것은 그 별칭이고,
+# 생성자에서 덮어쓸 수 있다 — 격자 간격을 바꾼 회귀 테스트를 짤 수 있게.
+GRID_M = SETTINGS.fixture.grid_m
 _M_PER_DEG_LAT = 111_320.0
 
 
 class FixtureProvider:
     name = "fixture"
 
-    def __init__(self, image_dir: Path | str):
+    def __init__(self, image_dir: Path | str, *, grid_m: float = GRID_M):
+        self.grid_m = grid_m
         self.dir = Path(image_dir)
         self.images = sorted(p for p in self.dir.iterdir()
                              if p.suffix.lower() in {".jpg", ".jpeg", ".png"})
@@ -39,12 +43,12 @@ class FixtureProvider:
             raise ProviderError(f"이미지가 없다: {self.dir}")
 
     def nearest(self, lat: float, lng: float, radius_m: float) -> Pano | None:
-        step_lat = GRID_M / _M_PER_DEG_LAT
+        step_lat = self.grid_m / _M_PER_DEG_LAT
         glat = round(lat / step_lat) * step_lat
         # 경도 격자 폭은 **스냅된** 위도로 정한다. 입력 위도를 그대로 쓰면 위도가
         # 조금만 달라져도 경도 격자 자체가 미끄러져, 같은 자리인데 pano_id 가
         # 달라진다. 그러면 재방문 감지가 영원히 동작하지 않는다.
-        step_lng = GRID_M / (_M_PER_DEG_LAT * max(0.1, abs(_cos(glat))))
+        step_lng = self.grid_m / (_M_PER_DEG_LAT * max(0.1, abs(_cos(glat))))
         glng = round(lng / step_lng) * step_lng
         return Pano(pano_id=f"fx_{glat:.6f}_{glng:.6f}", lat=glat, lng=glng)
 
@@ -69,8 +73,8 @@ class FixtureProvider:
         폭이 위도에 따라 달라지는 문제(→ nearest 주석)를 여기서 또 틀리게 된다.
         같은 자리는 언제 도달하든 같은 id 여야 재방문 감지가 동작한다.
         """
-        step_lat = GRID_M / _M_PER_DEG_LAT
-        step_lng = GRID_M / (_M_PER_DEG_LAT * max(0.1, abs(_cos(pano.lat))))
+        step_lat = self.grid_m / _M_PER_DEG_LAT
+        step_lng = self.grid_m / (_M_PER_DEG_LAT * max(0.1, abs(_cos(pano.lat))))
         out = []
         for heading, dlat, dlng in ((0.0, step_lat, 0.0), (90.0, 0.0, step_lng),
                                     (180.0, -step_lat, 0.0), (270.0, 0.0, -step_lng)):

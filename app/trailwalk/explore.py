@@ -46,11 +46,13 @@ depth 를 따르지 않아 **"너비 우선" 이 더는 사실이 아니게 된�
 지금은 발견 순서 그대로 FIFO 로 소비한다. 판정은 큐의 순서를 바꾸지
 않는다. 차도로 새는 것은 max_depth(반경)와 max_vlm_calls(총량)가 막는다.
 """
+from __future__ import annotations
+
 import time
 from collections import deque
 from dataclasses import dataclass, field
 
-from . import geo
+from . import geo, settings
 from .imaging import view_to_data_uri
 from .providers.base import Pano
 from .vlm import ImageIgnoredError, ServerDeadError, VlmError
@@ -59,24 +61,32 @@ from .walk import _candidates
 
 @dataclass
 class ExploreConfig:
-    # ── 예산. 실질 상한은 호출 수다 ────────────────────────────────────
-    max_vlm_calls: int = 60       # VLM 호출 총량. 탐색 비용의 실체(~2.2s/건)라 이것이 실질 상한
-    max_depth: int = 15           # 시작 pano 로부터의 걸음 수 한계. "어디까지 볼 것인가" 의 반경
-    max_seconds: float = 900.0    # 벽시계 예산. 캡처(프레임 안정화) 지연까지 포함한 안전망
+    """탐색 정책. **기본값은 여기가 아니라 app/config/trailwalk.yaml 에 있다.**
 
-    # ── 판정 ──────────────────────────────────────────────────────────
-    expand_non_trail: bool = True # "아님" 판정도 확장할 것인가. True 면 차도에서 시작해도
-                                  # 건너편 산책로를 찾는다 (depth·호출 예산이 폭주를 막는다).
-                                  # False 는 산책로 갈래만 따라가는 예전 방식 — 호출이 절약된다
+    walk.WalkConfig 와 같은 이유다 — 기본값을 코드에 다시 적으면 정본이 둘이 된다.
+    """
+    max_vlm_calls: int
+    max_depth: int
+    max_seconds: float
+    expand_non_trail: bool
+    max_candidates: int
+    snap_radius_m: float
 
-    # ── 후보 ──────────────────────────────────────────────────────────
-    max_candidates: int = 4       # 한 노드에서 최대 몇 방향까지 물어볼지 (그래프 이웃 상한).
-                                  # 시작 노드에는 안 걸린다 — walk._candidates 참조
-    max_turn_deg: float = 180.0   # 180 = 방향 필터 없음. walk 와 달리 U턴 방지가 필요 없다 —
-                                  # 온 길은 visited 로 정확히 빠지고, 탐색은 모든 방향을 본다
+    # 캡처한 바이트를 서버로 보낼 때의 규칙 (크기·품질). 루프가 imaging 에
+    # 넘긴다 — 모듈 상수로 읽게 두면 --config 가 무시된다
+    image: object
 
-    # ── 이웃 그래프가 없는 provider 를 위한 폴백 (walk 와 같은 값) ─────
-    snap_radius_m: float = 25.0   # 시작 좌표를 pano 로 스냅할 때만 쓴다
+    @classmethod
+    def from_settings(cls, s) -> ExploreConfig:
+        return cls(
+            max_vlm_calls=s.budget.max_vlm_calls,
+            max_depth=s.budget.explore_max_depth,
+            max_seconds=s.budget.max_seconds,
+            expand_non_trail=s.candidates.expand_non_trail,
+            max_candidates=s.candidates.max_candidates,
+            snap_radius_m=s.geo.snap_radius_m,
+            image=s.image,
+        )
 
 
 @dataclass
@@ -104,7 +114,8 @@ class _Node:
 def explore(provider, client, start: tuple[float, float], start_bearing: float = 0.0,
             cfg: ExploreConfig | None = None, log=None) -> ExploreResult:
     """start 에서 모든 방향으로 산책로 그래프를 넓힌다."""
-    cfg = cfg or ExploreConfig()   # 기본 인자로 두면 호출 간에 공유된다 (walk.py 와 같은 이유)
+    # 기본 인자로 두면 인스턴스가 호출 간에 공유된다 (walk.py 와 같은 이유)
+    cfg = cfg or ExploreConfig.from_settings(settings.SETTINGS)
     res = ExploreResult()
     t0 = time.time()
 
@@ -117,7 +128,7 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
                 log.event("capture_failed", step=depth, pano_id=p.pano_id,
                           heading=round(hdg, 1), error=f"{type(e).__name__}: {e}")
             return None
-        uri, src_format = view_to_data_uri(raw)
+        uri, src_format = view_to_data_uri(raw, cfg.image)
         v = client.assess(uri, heading=hdg)
         res.calls += 1
         if log:

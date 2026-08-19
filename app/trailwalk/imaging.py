@@ -18,16 +18,19 @@ import io
 
 from PIL import Image
 
-# 16:9 고정. 긴 변이 리사이즈 목표(1056)보다 커서 서버가 다운스케일한다.
-# → 입력 크기와 무관하게 이미지 토큰이 264 로 상수가 된다 (10-client-guide.md §2.3).
-TARGET_SIZE = (1280, 720)
-EXPECTED_IMAGE_TOKENS = 264
+from .settings import SETTINGS
 
-# prompt_tokens 하한. 이미지가 무시되면(WEBP 사고) 텍스트 분량만 잡혀 수십 토큰이 된다.
-# 이미지 토큰 264 의 3/4 만 넘겨도 "이미지가 들어갔다" 는 확실하다.
-MIN_PROMPT_TOKENS = 200
-
-JPEG_QUALITY = 90
+# 값의 정본은 app/config/trailwalk.yaml 이고 근거 주석도 전부 그쪽에 있다
+# (16:9 고정 이유, 화각과의 결합, 토큰 264).
+#
+# 아래는 **정본 설정을 안 넘겼을 때의 기본**일 뿐이다. 모듈 상수로 읽어 쓰면
+# --config 로 다른 image.target_size 를 준 런이 조용히 이 값으로 돈다 —
+# kakao 뷰포트는 새 크기로 찍는데 여기서 옛 크기로 되크롭해 화각만 좁아지고,
+# 에러도 로그도 안 남는다. 그래서 함수는 전부 ImageSettings 를 인자로 받는다.
+TARGET_SIZE = SETTINGS.image.target_size
+EXPECTED_IMAGE_TOKENS = SETTINGS.image.expected_image_tokens
+MIN_PROMPT_TOKENS = SETTINGS.image.min_prompt_tokens
+JPEG_QUALITY = SETTINGS.image.jpeg_quality
 
 
 class ImagePreprocessError(RuntimeError):
@@ -44,38 +47,43 @@ def _load(raw: bytes) -> tuple[Image.Image, str]:
     return img.convert("RGB"), fmt
 
 
-def _encode(img: Image.Image) -> str:
-    """항상 JPEG. 항상 TARGET_SIZE. 여기가 유일한 출구다.
+def _encode(img: Image.Image, image=None) -> str:
+    """항상 JPEG. 항상 image.target_size. 여기가 유일한 출구다.
 
     종횡비가 다르면 **가운데를 잘라** 맞춘다. 늘려 맞추면 토큰 수는 같지만 장면이
     일그러져 "길이 어느 쪽으로 이어지는가" 가 왜곡된다. 잘라내면 화각이 좁아질 뿐
     보이는 것은 정직하다.
     """
-    if img.size != TARGET_SIZE:
+    image = image or SETTINGS.image
+    target = tuple(image.target_size)
+    if img.size != target:
         w, h = img.size
-        want = TARGET_SIZE[0] / TARGET_SIZE[1]
+        want = target[0] / target[1]
         if abs(w / h - want) > 1e-3:
             cw, ch = (round(h * want), h) if w / h > want else (w, round(w / want))
             img = img.crop(((w - cw) // 2, (h - ch) // 2, (w - cw) // 2 + cw, (h - ch) // 2 + ch))
-        img = img.resize(TARGET_SIZE, Image.LANCZOS)
+        img = img.resize(target, Image.LANCZOS)
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=JPEG_QUALITY)
+    img.save(buf, format="JPEG", quality=image.jpeg_quality)
     return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
-def view_to_data_uri(raw: bytes) -> tuple[str, str]:
+def view_to_data_uri(raw: bytes, image=None) -> tuple[str, str]:
     """이미 한 화각인 이미지 → data URI. (uri, 원본포맷) 을 돌려준다.
+
+    `image` 는 settings.ImageSettings. 안 넘기면 정본을 쓴다 — 넘기지 않는
+    호출부가 --config 를 무시하게 되므로, 루프에서는 반드시 cfg 것을 넘긴다.
 
     원본 포맷을 같이 돌려주는 이유: provider 가 WEBP 를 주기 시작하면 런로그에
     그 사실이 남아야 한다. 변환 자체는 여기서 항상 되므로 서버가 깨지진 않지만,
     provider 가 바뀌었다는 신호는 놓치면 안 된다.
     """
     img, fmt = _load(raw)
-    return _encode(img), fmt
+    return _encode(img, image), fmt
 
 
 def equirect_to_view(raw: bytes, heading: float, fov_deg: float = 90.0,
-                     pitch_deg: float = 0.0) -> tuple[str, str]:
+                     pitch_deg: float = 0.0, image=None) -> tuple[str, str]:
     """등장방형 360° 파노라마에서 heading 방향 한 화각을 잘라 data URI 로.
 
     단순 사각 크롭이 아니라 gnomonic(직선 보존) 재투영이다. 사각 크롭은 화각이
@@ -92,7 +100,7 @@ def equirect_to_view(raw: bytes, heading: float, fov_deg: float = 90.0,
 
     src, fmt = _load(raw)
     sw, sh = src.size
-    W, H = TARGET_SIZE
+    W, H = tuple((image or SETTINGS.image).target_size)
 
     # 이미지 평면 좌표 → 카메라 좌표. f 는 수평 화각으로 정한 초점거리(픽셀).
     f = (W / 2) / np.tan(np.radians(fov_deg) / 2)
@@ -118,4 +126,4 @@ def equirect_to_view(raw: bytes, heading: float, fov_deg: float = 90.0,
     yi = np.clip(sy.astype(np.int64), 0, sh - 1)
 
     out = np.asarray(src)[yi, xi]
-    return _encode(Image.fromarray(out)), fmt
+    return _encode(Image.fromarray(out), image), fmt

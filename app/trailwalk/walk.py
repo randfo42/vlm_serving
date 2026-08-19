@@ -34,10 +34,12 @@ VLM 에게 묻는 것은 오직 **"이 장면이 산책로인가"** 하나다. �
 폴백은 없앴다 — 이웃을 못 얻으면 지어내지 않고 `neighbors_missing` 으로
 멈춘다. fixture 도 격자를 그래프로 정직하게 준다 (→ providers/fixture.py).
 """
+from __future__ import annotations
+
 import time
 from dataclasses import dataclass, field
 
-from . import geo
+from . import geo, settings
 from .imaging import view_to_data_uri
 from .providers.base import Neighbor, Pano, ProviderError
 from .vlm import ImageIgnoredError, ServerDeadError, VlmError
@@ -45,21 +47,36 @@ from .vlm import ImageIgnoredError, ServerDeadError, VlmError
 
 @dataclass
 class WalkConfig:
-    max_candidates: int = 3       # 한 스텝에서 최대 몇 방향까지 물어볼지
-    max_turn_deg: float = 120.0   # 이보다 크게 꺾이는 이웃은 후보에서 뺀다 (U턴 방지)
-    max_steps: int = 120
+    """탐색 정책. **기본값은 여기가 아니라 app/config/trailwalk.yaml 에 있다.**
 
-    # 후보를 전부 물을 것인가, 첫 성공에서 멈출 것인가.
-    #
-    # 근거가 비용이다. 후보는 온 길을 뺀 실제 이웃이라 직선 구간에서는 개수가
-    # 1이다 — 전부 물어도 1호출이고, 개수가 2 이상인 곳은 진짜 갈림길이라
-    # 어차피 알아야 한다. 즉 늘어나야 할 곳에서만 늘어난다. 그래서 기본이 전부다.
-    probe_all: bool = True
-    max_seconds: float = 900.0
-    miss_tolerance: int = 2       # 어느 방향도 산책로가 아닌 스텝을 몇 번 참을지
+    필드에 기본값을 다시 적으면 정본이 둘이 된다 — 어느 쪽이 먹는지 코드를
+    읽어야 알게 되고, 그게 정확히 이 리팩터링이 없앤 문제다. 그래서 여기는
+    자료구조일 뿐이고, 값은 `from_settings()` 가 YAML 에서 채운다.
+    """
+    max_candidates: int
+    max_steps: int
+    probe_all: bool
+    max_vlm_calls: int
+    max_seconds: float
+    miss_tolerance: int
+    snap_radius_m: float
 
-    # 시작 좌표를 pano 로 스냅할 때만 쓴다. 이후 이동은 전부 그래프다
-    snap_radius_m: float = 25.0
+    # 캡처한 바이트를 서버로 보낼 때의 규칙 (크기·품질). 루프가 imaging 에
+    # 넘긴다 — 모듈 상수로 읽게 두면 --config 가 무시된다
+    image: object
+
+    @classmethod
+    def from_settings(cls, s) -> WalkConfig:
+        return cls(
+            max_candidates=s.candidates.max_candidates,
+            max_steps=s.budget.walk_max_steps,
+            probe_all=s.candidates.probe_all,
+            max_vlm_calls=s.budget.max_vlm_calls,
+            max_seconds=s.budget.max_seconds,
+            miss_tolerance=s.candidates.miss_tolerance,
+            snap_radius_m=s.geo.snap_radius_m,
+            image=s.image,
+        )
 
 
 @dataclass
@@ -109,25 +126,32 @@ def _candidates(provider, pano: Pano, bearing: float, came_from: str | None,
     if came_from is None:
         # ── 시작 노드: 화살표를 하나도 빼지 않는다 ──
         #
-        # 여기엔 "온 길" 이 없다. 그런데도 U턴 필터(max_turn_deg)를 걸면
-        # **사용자가 준 --bearing 이 방향을 지우는 필터가 된다.** 청계천에서
-        # 실측: 이웃이 동 91.4°/서 267.8° 인데 `--bearing 45` 를 주면 서쪽이
-        # 137° 로 걸려 아예 안 물어본다. frontier 에도 안 남아 흔적이 없다.
-        #
         # 시작점 판정은 "여기서 갈 수 있는 길이 하나라도 산책로인가" 이므로
         # 갈 수 있는 방향을 전부 봐야 한다. 호출 수 = 화살표 개수.
         return [(n.heading, n) for n in fresh], True
 
-    turnable = [n for n in fresh if geo.angle_diff(n.heading, bearing) <= cfg.max_turn_deg]
-    return [(n.heading, n) for n in (turnable or fresh)[:cfg.max_candidates]], True
+    # 각도로 거르지 않는다. 예전엔 max_turn_deg(walk 120°)로 U턴을 막았는데,
+    # U턴은 이미 위에서 came_from/visited 가 **pano_id 로 정확히** 막는다.
+    # 각도 필터가 실제로 한 일은 두 가지뿐이었다:
+    #
+    #   - 시작 노드에서 사용자가 준 bearing 이 지도의 갈래를 지웠다. 청계천
+    #     실측: 이웃이 동 91.4°/서 267.8° 인데 bearing 45 를 주면 서쪽이
+    #     137° 로 걸려 아예 안 물어보고 frontier 에도 안 남았다. 그래서 시작
+    #     노드는 위에서 면제됐다.
+    #   - 남은 자리에서도 `turnable or fresh` 폴백 때문에 하드 필터가 아니라
+    #     선호도였다. 전멸하면 통째로 무시됐다.
+    #
+    # explore 는 이미 180(=필터 없음)으로 돌고 있었고 문제가 없었다. 정렬이
+    # 이미 정면을 앞에 두므로 자르기만 하면 된다.
+    return [(n.heading, n) for n in fresh[:cfg.max_candidates]], True
 
 
 def walk(provider, client, start: tuple[float, float], start_bearing: float,
          cfg: WalkConfig | None = None, log=None) -> WalkResult:
     """start 에서 start_bearing 방향으로 출발해 산책로를 따라간다."""
-    # 기본 인자로 WalkConfig() 를 두면 인스턴스 하나가 호출 간에 공유된다.
+    # 기본 인자로 WalkConfig(...) 를 두면 인스턴스 하나가 호출 간에 공유된다.
     # 지금은 아무도 cfg 를 고치지 않지만, 고치는 순간 다음 런에 조용히 새어 간다.
-    cfg = cfg or WalkConfig()
+    cfg = cfg or WalkConfig.from_settings(settings.SETTINGS)
     res = WalkResult()
     t0 = time.time()
     bearing = geo.norm_deg(start_bearing)
@@ -146,7 +170,7 @@ def walk(provider, client, start: tuple[float, float], start_bearing: float,
                 log.event("capture_failed", step=step, pano_id=p.pano_id,
                           heading=round(hdg, 1), error=f"{type(e).__name__}: {e}")
             return None
-        uri, src_format = view_to_data_uri(raw)
+        uri, src_format = view_to_data_uri(raw, cfg.image)
         v = client.assess(uri, heading=hdg)
         res.calls += 1
         if log:
@@ -155,6 +179,11 @@ def walk(provider, client, start: tuple[float, float], start_bearing: float,
         return v.is_trail
 
     while True:
+        # 예산 셋. 실질 상한은 호출 수다 — 갈림길이 많으면 같은 걸음 수라도
+        # 호출이 몇 배가 되므로, max_steps 만으로는 비용이 안 보인다.
+        # explore 가 같은 이유로 호출 수를 쓴다 (두 루프의 예산을 비교 가능하게).
+        if res.calls >= cfg.max_vlm_calls:
+            res.stop_reason = "call_budget"; break
         if res.steps >= cfg.max_steps:
             res.stop_reason = "max_steps"; break
         if time.time() - t0 > cfg.max_seconds:
@@ -205,8 +234,23 @@ def walk(provider, client, start: tuple[float, float], start_bearing: float,
         oks: list[tuple[float, Neighbor]] = []
         judged: list[tuple[float, Neighbor]] = []   # 판정을 실제로 받은 후보 ("아님" 포함)
         failed = 0
+        budget_hit = False
         try:
-            for hdg, nb in cands:
+            for i, (hdg, nb) in enumerate(cands):
+                # 예산은 **후보마다** 본다. 스텝 경계에서만 보면 하드 캡이 아니다 —
+                # 시작 노드는 max_candidates 슬라이싱도 안 받으므로(_candidates),
+                # 이웃이 4개면 max_vlm_calls=1 이어도 4번 부르고 나서야 멈춘다.
+                if res.calls >= cfg.max_vlm_calls:
+                    res.stop_reason = "call_budget"
+                    # 못 물은 후보는 버리지 않는다 — 판정을 안 받았을 뿐 갈래는
+                    # 갈래다 (explore 와 같은 규칙)
+                    for _h2, n2 in cands[i:]:
+                        res.frontier.append({
+                            "from_pano": pano.pano_id, "from_step": res.steps,
+                            "heading": round(_h2, 1), "pano_id": n2.pano_id,
+                            "lat": n2.lat, "lng": n2.lng})
+                    budget_hit = True
+                    break
                 ok = probe(pano, hdg, res.steps)
                 if ok is None:
                     # 판정 불가(캡처 실패). "아님" 이 아니라 API 쪽 실패다 —
@@ -226,6 +270,20 @@ def walk(provider, client, start: tuple[float, float], start_bearing: float,
             if log:
                 log.event("vlm_error", step=res.steps, error=str(e)[:400])
             res.stop_reason = "vlm_error"; break
+
+        if budget_hit:
+            # 예산이 끝났다. 반쪽짜리 후보 목록으로 고르면 "가장 정면인 산책로"
+            # 가 아니게 되므로 이 스텝은 마무리하지 않는다.
+            #
+            # 다만 **이미 산책로로 확인된 갈래는 반드시 남긴다.** 호출을 써서
+            # 얻은 판정이고, frontier 의 계약이 "산책로인데 안 간 갈래" 다.
+            # 여기서 빠뜨리면 돈 주고 산 판정이 로그 어디에도 안 남는다.
+            for hdg, nb in oks:
+                res.frontier.append({
+                    "from_pano": pano.pano_id, "from_step": res.steps,
+                    "heading": round(hdg, 1), "pano_id": nb.pano_id,
+                    "lat": nb.lat, "lng": nb.lng})
+            break
 
         if oks:
             chosen = oks[0]         # 가장 정면에 가까운 산책로

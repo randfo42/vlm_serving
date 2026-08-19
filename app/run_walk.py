@@ -1,12 +1,15 @@
 #!/usr/bin/env python
 """탐색 루프 한 번 실행.
 
-    # 배선 확인 (API 키 불필요, 로컬 이미지를 로드뷰인 척 씀)
-    python app/run_walk.py --provider fixture --start 37.5665,126.9780 --steps 8
+    # 기본 설정 그대로 (app/config/trailwalk.yaml)
+    python app/run_walk.py
 
-    # 실제 로드뷰 (Kakao JS 앱키 필요 — app/docs/23-open-questions.md §1)
-    KAKAO_JS_KEY=xxx python app/run_walk.py --provider kakao \\
-        --start 37.5768,127.0246 --bearing 90 --steps 60
+    # 다른 설정으로
+    python app/run_walk.py --config app/config/cheonggyecheon.yaml
+
+**CLI 인자는 `--config` 하나뿐이다.** 좌표도, 예산도, 프롬프트도 전부 설정
+파일에 있다 — 런 하나를 재현하려면 그 파일 하나만 있으면 된다는 뜻이다.
+값을 바꾸려면 설정 파일을 복사해서 고친다 (→ CLAUDE.md "설정").
 
 서버가 떠 있어야 한다: ./configs/smoke.sh
 """
@@ -19,10 +22,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from trailwalk import prompt as P
-from trailwalk import providers
+from trailwalk import providers, settings
 from trailwalk.imaging import view_to_data_uri
 from trailwalk.runlog import RunLog
-from trailwalk.vlm import DEFAULT_URL, VlmClient
+from trailwalk.vlm import VlmClient
 from trailwalk.walk import WalkConfig, walk
 
 APP = Path(__file__).resolve().parent
@@ -31,78 +34,60 @@ APP = Path(__file__).resolve().parent
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--provider", default="fixture", choices=providers.NAMES)
-    ap.add_argument("--start", required=True, help="lat,lng")
-    ap.add_argument("--bearing", type=float, default=0.0,
-                    help="출발 방위각 (0=북). 시작 노드는 이웃을 전부 물으므로 "
-                         "이 값은 어느 쪽을 먼저 물을지(정렬)만 정한다. "
-                         "max_turn_deg 필터는 둘째 스텝부터 진행 방향 기준으로 돈다")
-    ap.add_argument("--steps", type=int, default=WalkConfig.max_steps)
-    ap.add_argument("--candidates", type=int, default=WalkConfig.max_candidates,
-                    help="한 스텝에서 최대 몇 방향까지 물어볼지 (기본 3)")
-    ap.add_argument("--probe-all", dest="probe_all", action="store_true", default=None,
-                    help="후보를 전부 물어본다 (기본값이다 — 끄려면 --first-hit)")
-    ap.add_argument("--first-hit", dest="probe_all", action="store_false",
-                    help="첫 성공에서 멈춘다. 갈림길을 놓치는 대신 호출이 준다")
-    ap.add_argument("--schema", default="walk", choices=sorted(P.SCHEMAS),
-                    help="walk=is_trail 만(빠름) / eval=+confidence(ROC 용)")
-    ap.add_argument("--prompt", default=P.DEFAULT_VERSION, choices=sorted(P.PINS),
-                    help="판정 기준. v3=카메라가 산책로 위에 서 있는가(기본) / "
-                         "v1=프레임에 산책로가 보이는가 / v2=v3 의 이전판(너무 엄격). "
-                         "서로 다른 질문이라 버전이 다른 런은 직접 비교하지 말 것")
-    ap.add_argument("--url", default=DEFAULT_URL)
-    ap.add_argument("--headed", action="store_true",
-                    help="kakao: 브라우저를 띄운다. 검은 화면이 찍힐 때 첫 확인 수단")
-    ap.add_argument("--warmup", action="store_true",
-                    help="첫 호출 전에 버리는 요청을 1회 보낸다. 유휴 뒤 첫 요청이 "
-                         "13초까지 튀므로, 지연을 재는 런에서는 켤 것")
-    ap.add_argument("--out", default=None, help="런로그 경로 (기본: app/runs/<시각>.jsonl)")
-    ap.add_argument("--save-images", action="store_true",
-                    help="probe 이미지를 app/runs/images/<런이름>/ 에 남긴다 "
-                         "(판정을 눈으로 감사할 때. 약관 → docs/23-open-questions.md §2)")
+    ap.add_argument("--config", default=None,
+                    help=f"설정 파일 경로 (기본: {settings.DEFAULT_PATH})")
     a = ap.parse_args()
 
-    lat, lng = (float(x) for x in a.start.split(","))
-    out = Path(a.out) if a.out else (
-        APP / "runs" / f"{datetime.now(UTC):%Y%m%dT%H%M%SZ}-{a.provider}.jsonl")
-
-    cfg = WalkConfig(max_steps=a.steps, max_candidates=a.candidates,
-                     **({} if a.probe_all is None else {"probe_all": a.probe_all}))
-    client = VlmClient(url=a.url, schema_name=a.schema, system_version=a.prompt)
     try:
-        prov = providers.make(a.provider, headless=not a.headed)
+        st = settings.load(a.config)
+    except settings.SettingsError as e:
+        print(f"✗ {e}", file=sys.stderr)
+        return 2
+
+    lat, lng = st.run.start
+    bearing = st.run.bearing
+    out = Path(st.run.out) if st.run.out else (
+        APP / "runs" / f"{datetime.now(UTC):%Y%m%dT%H%M%SZ}-{st.run.provider}.jsonl")
+
+    cfg = WalkConfig.from_settings(st)
+    client = VlmClient(url=st.vlm.url, schema_name=st.vlm.schema,
+                       system_version=st.vlm.prompt_version, settings=st)
+    try:
+        prov = providers.make(st.run.provider, settings=st)
     except (providers.ProviderError, RuntimeError) as e:
         # 설정 문제(키·도메인·서비스 활성화)는 버그가 아니다. 스택트레이스를
         # 쏟아내면 정작 읽어야 할 안내가 묻힌다.
         print(f"✗ {e}", file=sys.stderr)
-        if a.provider == "kakao":
+        if st.run.provider == "kakao":
             print("\n진단을 자세히 보려면: python app/check_kakao.py --headed", file=sys.stderr)
         return 2
 
-    header = {"provider": prov.name, "schema": a.schema, "url": a.url,
-              "start": [lat, lng], "start_bearing": a.bearing,
+    header = {"provider": prov.name, "schema": st.vlm.schema, "url": st.vlm.url,
+              "start": [lat, lng], "start_bearing": bearing,
               "config": vars(cfg),
-              "prompt": P.fingerprint(a.prompt)}
+              # 어느 설정 파일로 돌았는지. 런로그만 보고 재현할 수 있어야 한다
+              "config_path": str(Path(a.config).resolve() if a.config else settings.DEFAULT_PATH),
+              "prompt": P.fingerprint(st.vlm.prompt_version)}
 
-    print(f"provider={prov.name}  prompt={a.prompt}  schema={a.schema}  "
-          f"start=({lat},{lng}) bearing={a.bearing}\n로그: {out}\n")
+    print(f"provider={prov.name}  prompt={st.vlm.prompt_version}  schema={st.vlm.schema}  "
+          f"start=({lat},{lng}) bearing={bearing}\n로그: {out}\n")
     res = None
     try:
         with RunLog(out, header,
                     image_dir=(APP / "runs" / "images" / out.stem)
-                    if a.save_images else None) as log:
+                    if st.run.save_images else None) as log:
             if hasattr(prov, "on_event"):
                 # provider 쪽 신호(렌더 미안정 등)도 런로그에 싣는다
                 prov.on_event = log.event
             try:
-                if a.warmup:
+                if st.run.warmup:
                     pano = prov.nearest(lat, lng, cfg.snap_radius_m)
                     if pano:
-                        uri, _ = view_to_data_uri(prov.capture(pano, a.bearing))
+                        uri, _ = view_to_data_uri(prov.capture(pano, bearing))
                         t = time.perf_counter()
                         client.warmup(uri)
                         log.event("warmup", ms=round((time.perf_counter() - t) * 1000, 1))
-                res = walk(prov, client, (lat, lng), a.bearing, cfg, log)
+                res = walk(prov, client, (lat, lng), bearing, cfg, log)
             finally:
                 # 예외로 죽어도 요약은 남긴다. 서버가 죽어 중단된 런일수록
                 # 어디까지 갔고 몇 번 재시도했는지가 중요하다.
