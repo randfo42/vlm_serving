@@ -198,7 +198,12 @@ def effective_waypoints(course: dict, verbose: bool = False) -> list[dict]:
 
 
 def print_keys(paths: ds.DatasetPaths) -> int:
-    """수동 트레이스를 넣을 때 필요한 캐시 파일명 목록 (→ 24-course-routes.md §5)."""
+    """구간별 캐시 파일명 목록.
+
+    쓸 곳: 특정 구간만 다시 받고 싶을 때 지울 파일을 고른다. 캐시 키가 구간
+    인덱스가 아니라 양끝 좌표의 sha1 이라 파일명을 손으로 계산할 수 없다.
+    (→ 24-course-routes.md §5)
+    """
     data = json.loads(paths.waypoints.read_text(encoding="utf-8"))
     for course in data["courses"]:
         cid = course["course_id"]
