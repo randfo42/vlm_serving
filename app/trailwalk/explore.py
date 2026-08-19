@@ -33,9 +33,18 @@ VLM 에게 묻는 것은 walk 와 완전히 같다: "이 장면이 산책로인�
 안에서는 계속 간다. 차도를 다리 삼아 건너면 하천 램프가 나온다.
 
 폭주는 예산이 막는다: max_depth 가 반경을, max_vlm_calls 가 총량을 자른다.
-다만 호출이 차도 격자에 새지 않게 큐를 둘로 나눈다 — **산책로 갈래 큐를
-먼저 비우고**, 아님 갈래는 그다음이다. 예산은 산책로를 따라가는 데 먼저
-쓰이고, 남으면 다리(차도)를 건너 보는 데 쓰인다.
+
+### 큐는 하나다
+
+한때 산책로 갈래와 "아님" 갈래를 두 큐로 나눠 산책로 쪽을 먼저 비웠다.
+호출이 차도 격자에 새는 것을 막으려는 것이었지만, 그러면 소비 순서가
+depth 를 따르지 않아 **"너비 우선" 이 더는 사실이 아니게 된다** — 아님
+큐의 depth 2 가 산책로 큐의 depth 8 뒤로 밀린다. 그러면 frontier 도
+"시작점에서 가까운 순서로 잘린 경계" 가 아니게 되어 이어서 탐색할 때의
+입력으로서 의미가 흐려진다.
+
+지금은 발견 순서 그대로 FIFO 로 소비한다. 판정은 큐의 순서를 바꾸지
+않는다. 차도로 새는 것은 max_depth(반경)와 max_vlm_calls(총량)가 막는다.
 """
 import time
 from collections import deque
@@ -140,24 +149,22 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
         res.wall_s = time.time() - t0
         return res
 
-    # 큐가 둘이다: 산책로 갈래를 먼저 비우고, "아님" 갈래(다리)는 그다음.
-    # 예산이 산책로를 따라가는 데 먼저 쓰이게 하는 유일한 장치다
-    q_trail: deque[_Node] = deque(
+    # 큐는 하나. 발견 순서대로 FIFO 라 소비 순서가 곧 depth 순서다
+    q: deque[_Node] = deque(
         [_Node(depth=0, bearing=geo.norm_deg(start_bearing), came_from=None, pano=start_pano)])
-    q_miss: deque[_Node] = deque()
     # 큐에 들어갔거나 "아니오" 판정을 받은 pano. 어느 쪽이든 다시 묻지 않는다
     visited: set[str] = {start_pano.pano_id}
 
     def drain() -> list[dict]:
-        return [leftover(n, res.stop_reason) for n in (*q_trail, *q_miss)]
+        return [leftover(n, res.stop_reason) for n in q]
 
-    while q_trail or q_miss:
+    while q:
         if time.time() - t0 > cfg.max_seconds:
             res.stop_reason = "time_budget"
             res.frontier += drain()
             break
 
-        node = (q_trail or q_miss).popleft()
+        node = q.popleft()
 
         res.nodes.append({"pano_id": node.pano.pano_id, "lat": node.pano.lat,
                           "lng": node.pano.lng, "depth": node.depth,
@@ -223,7 +230,7 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
             child = _Node(depth=node.depth + 1, bearing=hdg,
                           came_from=node.pano.pano_id, is_trail=ok,
                           pano=Pano(pano_id=nb.pano_id, lat=nb.lat, lng=nb.lng))
-            (q_trail if ok else q_miss).append(child)
+            q.append(child)
 
         if budget_hit:
             res.frontier += drain()
