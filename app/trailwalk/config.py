@@ -99,3 +99,14 @@ def kakao_appkey() -> str:
             "  두 키는 둘 다 32자 16진수라 값으로는 구별되지 않는다. 콘솔 > 내 애플리케이션\n"
             "  > 앱 키 에서 'JavaScript 키' 항목을 확인할 것.")
     return require(*KAKAO_KEY_NAMES, what="Kakao JavaScript 키")
+
+
+def kakao_rest_key() -> str:
+    """Kakao **REST** API 키 — 로컬 검색(지오코딩)·좌표변환(transcoord)용.
+
+    `KAKAO_KEY_NAMES` 에 절대 넣지 않는다. 저 목록은 JS SDK 전용이고, REST 키가
+    끼면 SDK 가 조용히 로드에 실패한다 (위 주석). 반대 방향도 같다 — 이 함수는
+    REST 이름 하나만 보고, JS 키로 폴백하지 않는다. REST 엔드포인트에 JS 키를
+    보내면 401 이 아니라 **403 quota 류의 오해하기 좋은 에러**가 온다.
+    """
+    return require("KAKAO_MAP_REST_API_KEY", what="Kakao REST API 키")

@@ -119,6 +119,24 @@ class KakaoSettings:
 
 
 @dataclass(frozen=True)
+class SamplingSettings:
+    interval_m: float
+    buffer_m: float
+    offroute_max_m: float
+    snap_radius_m: float
+    neg_ratio: float
+    grid_m: float
+
+
+@dataclass(frozen=True)
+class EvalSettings:
+    labels: str
+    out: str | None
+    resume: bool
+    save_first_n_failures: int
+
+
+@dataclass(frozen=True)
 class FixtureSettings:
     grid_m: float
     images_dir: str | None
@@ -134,6 +152,8 @@ class Settings:
     image: ImageSettings
     kakao: KakaoSettings
     fixture: FixtureSettings
+    sampling: SamplingSettings
+    eval: EvalSettings
 
 
 def _coerce(v: Any, hint: Any, where: str, name: str):

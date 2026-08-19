@@ -184,3 +184,44 @@ fixture:
 
   # null 이면 레포 루트의 bench/images
   images_dir: null
+
+# ── 라벨 샘플링 (app/labels/make_samples.py) ──────────────────────────────
+sampling:
+  # 폴리라인 리샘플 간격(m). Kakao pano 가 도로에서 ~10~20m 간격이라 50m 면
+  # 이웃 샘플이 같은 pano 로 스냅되는 중복이 드물다. 종로 9코스(~22km)에서
+  # positive 수백 개 규모 — 캡처 ~2s/장, eval ~2.2s/장에 맞는 파일럿 크기다.
+  # 첫 dry-run 의 개수를 보고 조정한다.
+  interval_m: 50.0
+
+  # 이 거리(m) 안쪽 pano 는 negative 후보에서 제외한다. 코스 폴리라인과
+  # 그 주변 보행 환경이 섞이는 완충 지대다. offroute negative 는 이 밖에서만.
+  buffer_m: 150.0
+
+  # offroute negative 를 찾는 최대 거리(m). 너무 멀면 장면 맥락(종로 시가지)
+  # 이 달라져 negative 가 쉬워진다 — 하드 네거티브의 목적에 어긋난다.
+  offroute_max_m: 1000.0
+
+  # 리샘플 점 → pano 스냅 반경(m). geo.snap_radius_m(25, 시작점용)보다 살짝
+  # 넓다 — 폴리라인이 길 중앙선이고 로드뷰 촬영차선이 몇 m 비껴 있기 때문.
+  snap_radius_m: 30.0
+
+  # negative : positive 최소 비율. docs/02-open-questions.md §2b "최소 1:1".
+  neg_ratio: 1.0
+
+  # offroute 후보를 찾는 격자 간격(m). 코스 bbox 를 이 간격으로 훑는다.
+  grid_m: 200.0
+
+# ── 평가 러너 (app/run_eval.py) ───────────────────────────────────────────
+eval:
+  # 검수 확정 라벨 (apply_review.py 산출). run_eval 의 유일한 입력이다.
+  labels: "app/labels/jongno/labels.jsonl"
+
+  # null 이면 app/runs/<UTC시각>-eval.jsonl
+  out: null
+
+  # out 파일이 이미 있으면 기록된 sample_id 를 건너뛰고 이어 쓴다.
+  # 서버가 죽어도(Metal OOM) 재시작 후 같은 명령이 곧 재개다.
+  resume: true
+
+  # 오판 이미지 경로를 몇 개까지 리포트에 남길지 (report_eval.py 가 보여준다)
+  save_first_n_failures: 20

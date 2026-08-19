@@ -20,7 +20,8 @@ from pathlib import Path
 
 
 class RunLog:
-    def __init__(self, path: Path, header: dict, image_dir: Path | None = None):
+    def __init__(self, path: Path, header: dict, image_dir: Path | None = None,
+                 append: bool = False):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # 판정을 눈으로 감사할 때만 켠다. 기본은 끔 (약관 → §2)
@@ -28,11 +29,14 @@ class RunLog:
         if self.image_dir:
             self.image_dir.mkdir(parents=True, exist_ok=True)
         self._n = 0
-        self._f = self.path.open("w", encoding="utf-8")
+        # append 는 재개용(run_eval resume): run_start 를 다시 쓰지 않고 이어 쓴다.
+        # 헤더가 기존 파일과 같은지는 호출자(재개 로직)가 확인할 일이다.
+        self._f = self.path.open("a" if append else "w", encoding="utf-8")
         self._t0 = time.time()
-        self._write({"type": "run_start",
-                     "ts": datetime.now(UTC).isoformat(timespec="seconds"),
-                     **header})
+        if not append:
+            self._write({"type": "run_start",
+                         "ts": datetime.now(UTC).isoformat(timespec="seconds"),
+                         **header})
 
     def _write(self, obj: dict) -> None:
         self._f.write(json.dumps(obj, ensure_ascii=False) + "\n")
@@ -40,7 +44,8 @@ class RunLog:
 
     def probe(self, *, step: int, pano_id: str, lat: float, lng: float,
               heading: float, verdict, src_format: str,
-              image: bytes | None = None) -> None:
+              image: bytes | None = None,
+              label: bool | None = None, sample_id: str | None = None) -> None:
         self._n += 1
         name = None
         if self.image_dir and image:
@@ -63,6 +68,10 @@ class RunLog:
             "latency_ms": round(verdict.latency_ms, 1),
             "src_format": src_format,
             **({"image": name} if name else {}),
+            # 평가 런에서만 존재한다. None 이면 필드 자체가 없어 기존 줄과
+            # 바이트가 같다 — walk/explore 런로그와 스키마 호환.
+            **({"label": label} if label is not None else {}),
+            **({"sample_id": sample_id} if sample_id is not None else {}),
         })
 
     def event(self, kind: str, **kw) -> None:
