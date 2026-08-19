@@ -60,6 +60,7 @@ class BudgetSettings:
     max_vlm_calls: int
     max_seconds: float
     explore_max_depth: int
+    max_distance_m: float
 
 
 @dataclass(frozen=True)

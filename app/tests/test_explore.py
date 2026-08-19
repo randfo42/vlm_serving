@@ -11,19 +11,34 @@ VLM 도 브라우저도 없이 돈다. 검증하는 것은 판정 **품질**이 
 - 예산(depth/호출)에 걸린 갈래는 사라지지 않고 frontier 에 남는다
 - **이동을 지어내지 않는다.** 이웃 목록을 못 얻은 것과 길이 끝난 것은 다른 사실이다
 """
+import math
 from dataclasses import replace
 
 import pytest
 
 from conftest import Client, Provider, nb
-from trailwalk import settings
+from trailwalk import explore as explore_mod
+from trailwalk import geo, settings
 from trailwalk.explore import ExploreConfig, explore
 from trailwalk.providers.base import ProviderError
 
+# 위도만 움직여 거리를 만든다. 경도를 안 건드리면 cos(lat) 항이 안 끼어
+# haversine 이 R·Δφ 그대로라 오차가 없다. 값을 다시 적지 않으려고 geo 에서 파생.
+_M_PER_DEG = geo.R * math.pi / 180        # 위도 1도 ≈ 111_195 m
 
-def run(provider, verdicts, bearing=0.0, **cfg):
-    """정본 설정에서 출발해 인자로 준 것만 덮어쓴다 (test_walk.run 과 같은 이유)."""
-    client = Client(provider, verdicts)
+
+def north(m: float, base: float = 37.5) -> float:
+    """base 에서 정북으로 m 미터 떨어진 위도."""
+    return base + m / _M_PER_DEG
+
+
+def run(provider, verdicts, bearing=0.0, client=None, **cfg):
+    """정본 설정에서 출발해 인자로 준 것만 덮어쓴다.
+
+    기본값을 여기 다시 적지 않는 것이 요점이다 — 테스트가 자기만의 기본값을
+    들고 있으면 설정 파일을 바꿔도 테스트는 예전 값으로 계속 통과한다.
+    """
+    client = client or Client(provider, verdicts)
     base = ExploreConfig.from_settings(settings.SETTINGS)
     return explore(provider, client, (37.5, 127.0), bearing, replace(base, **cfg))
 
@@ -239,7 +254,7 @@ def test_이웃을_못_얻은_갈래는_neighbors_missing으로_남긴다():
     이웃 로드에 실패해 호출 34/50 이 좌표 밀기로 샜다. 빈 목록은 "갈래 없음" 이
     아니라 렌더/스니핑 실패다 — 추측 방위로 걷지 않고 frontier 에 남긴다."""
     # pano id 는 그 실주행에서 실제로 폴백에 빠졌던 것들이다
-    p = Provider({"1212370258": [nb("1039598393", 33.0)],
+    p = Provider({"1212370258": [nb("1039598393", 33.0, lat=37.5696, lng=127.0051)],
                   "1039598393": []},                    # ← 이웃 로드 실패
                  start=("1212370258", 37.5695, 127.005))
     res = run(p, {("1212370258", 33.0): True})
@@ -271,3 +286,83 @@ def test_두_갈래가_같은_pano로_모이면_한_번만_간다():
     res = run(p, {("S", 0.0): True, ("S", 90.0): True,
                   ("L", 45.0): True, ("R", 45.0): True}, max_depth=3)
     assert sum(1 for n in res.nodes if n["pano_id"] == "MERGED") == 1
+
+
+# ── 거리 예산 ───────────────────────────────────────────────────────────────
+
+def test_거리_예산_밖은_확장하지_않고_frontier에_남긴다():
+    """depth 와 같은 처리다 — 반경 밖은 안 본 것이지 없는 것이 아니다."""
+    p = Provider({"S": [nb("NEAR", 0.0, lat=north(10))],
+                  "NEAR": [nb("FAR", 0.0, lat=north(30))],
+                  "FAR": [nb("BEYOND", 0.0, lat=north(50))],
+                  "BEYOND": []})
+    res = run(p, {("S", 0.0): True, ("NEAR", 0.0): True}, max_distance_m=25.0)
+    assert ("FAR", 0.0) not in p.probes, "반경 밖 노드를 확장했다"
+    assert "FAR" in [n["pano_id"] for n in res.nodes], "마킹조차 안 했다"
+    assert [(f["pano_id"], f["reason"]) for f in res.frontier] == \
+        [("FAR", "distance_budget")]
+
+
+def test_거리는_누적이_아니라_직선이다():
+    """되돌아오는 갈래가 예산을 먹지 않는다.
+
+    누적이면 S→A(30m)→B(다시 1m) 가 59m 로 계산돼 40m 예산에서 죽는다.
+    직선이면 B 는 시작점에서 1m 라 멀쩡히 확장된다.
+    """
+    p = Provider({"S": [nb("A", 0.0, lat=north(30))],
+                  "A": [nb("B", 180.0, lat=north(1))],
+                  "B": []})
+    res = run(p, {("S", 0.0): True, ("A", 180.0): True}, max_distance_m=40.0)
+    assert [f["reason"] for f in res.frontier] == ["neighbors_missing"], \
+        "되돌아온 갈래가 거리 예산에 걸렸다 — 누적으로 재고 있다"
+
+
+def test_거리_기준점은_요청_좌표가_아니라_스냅된_pano다():
+    """요청 좌표 기준이면 스냅이 튄 만큼(최대 snap_radius_m)을 아무것도 안
+    하고 까먹는다. 웹이 그리는 원과 그만큼 어긋나는 대신, 예산이 루프가
+    실제로 간 거리를 재게 된다."""
+    p = Provider({"S": [nb("A", 0.0, lat=north(1000))],
+                  "A": [nb("B", 0.0, lat=north(1100))],
+                  "B": []},
+                 start=("S", north(100), 127.0))       # 요청 좌표보다 100m 북쪽
+    run(p, {("S", 0.0): True, ("A", 0.0): True}, max_distance_m=950.0)
+    assert ("A", 0.0) in p.probes, \
+        "스냅점에서 900m 인데 요청 좌표 기준(1000m)으로 잘렸다"
+
+
+# ── 시간 예산 ───────────────────────────────────────────────────────────────
+
+class _Clock:
+    """가짜 시계. 판정 1건 = 1초로 친다 — 실시간을 기다리면 flaky 해진다."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def time(self) -> float:
+        return self.now
+
+
+class _TickingClient(Client):
+    def __init__(self, provider, verdicts, clock):
+        super().__init__(provider, verdicts)
+        self.clock = clock
+
+    def assess(self, uri, *, heading=None):
+        self.clock.now += 1.0
+        return super().assess(uri, heading=heading)
+
+
+def test_시간_예산은_노드_경계가_아니라_후보마다_걸린다(monkeypatch):
+    """한 노드의 후보가 max_candidates 개까지 되므로, 노드 경계에서만 보면
+    캡처가 느릴 때 그 노드 하나가 통째로 예산을 넘겨 실행된다."""
+    clock = _Clock()
+    monkeypatch.setattr(explore_mod, "time", clock)
+    p = Provider({"S": [nb("A", 0.0), nb("B", 90.0), nb("C", 180.0), nb("D", 270.0)],
+                  "A": [], "B": [], "C": [], "D": []})
+    res = run(p, {}, client=_TickingClient(p, {}, clock), max_seconds=1.5)
+    assert res.calls == 2, f"후보 루프 안에서 안 끊었다: {res.calls}호출"
+    assert res.stop_reason == "time_budget"
+    # 못 물은 후보 둘(D·C)과, "아님" 판정으로 큐에 들어갔다 못 간 둘(A·B).
+    # 어느 쪽도 버리지 않는다 — 판정을 안 받았을 뿐 갈래는 갈래다
+    assert {f["pano_id"] for f in res.frontier} == {"A", "B", "C", "D"}
+    assert {f["reason"] for f in res.frontier} == {"time_budget"}

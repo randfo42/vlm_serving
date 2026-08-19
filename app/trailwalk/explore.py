@@ -67,6 +67,7 @@ class ExploreConfig:
     max_vlm_calls: int
     max_depth: int
     max_seconds: float
+    max_distance_m: float
     expand_non_trail: bool
     max_candidates: int
     snap_radius_m: float
@@ -81,6 +82,7 @@ class ExploreConfig:
             max_vlm_calls=s.budget.max_vlm_calls,
             max_depth=s.budget.explore_max_depth,
             max_seconds=s.budget.max_seconds,
+            max_distance_m=s.budget.max_distance_m,
             expand_non_trail=s.candidates.expand_non_trail,
             max_candidates=s.candidates.max_candidates,
             snap_radius_m=s.geo.snap_radius_m,
@@ -211,6 +213,9 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
         res.wall_s = time.time() - t0
         return res
 
+    # 거리 예산의 기준점. 요청 좌표가 아니라 **스냅된 pano** 다 (→ yaml 주석)
+    origin = (start_pano.lat, start_pano.lng)
+
     # 큐는 하나. 발견 순서대로 FIFO 라 소비 순서가 곧 depth 순서다
     q: deque[_Node] = deque(
         [_Node(depth=0, bearing=geo.norm_deg(start_bearing), came_from=None, pano=start_pano)])
@@ -237,6 +242,11 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
             res.frontier.append(leftover(node, "max_depth"))
             continue
 
+        if geo.haversine_m(origin, (node.pano.lat, node.pano.lng)) > cfg.max_distance_m:
+            # depth 와 같은 처리다 — 반경 밖은 안 본 것이지 없는 것이 아니다
+            res.frontier.append(leftover(node, "distance_budget"))
+            continue
+
         # ── 후보 생성 (이 파일 위쪽 _candidates) ──
         cands, loaded = _candidates(provider, node.pano, node.bearing,
                                     node.came_from, visited, cfg)
@@ -251,14 +261,18 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
 
         budget_hit = False
         for i, (hdg, nb) in enumerate(cands):
-            if res.calls >= cfg.max_vlm_calls:
-                res.stop_reason = "call_budget"
+            # 예산은 노드 경계가 아니라 **후보마다** 본다. 한 노드의 후보가
+            # 최대 max_candidates 개라, 노드 경계에서만 보면 캡처가 느릴 때
+            # 그 노드 하나가 통째로 예산을 넘겨 실행된다.
+            if res.calls >= cfg.max_vlm_calls or time.time() - t0 > cfg.max_seconds:
+                res.stop_reason = ("call_budget" if res.calls >= cfg.max_vlm_calls
+                                   else "time_budget")
                 # 못 물은 후보들도 frontier 다 — 판정을 안 받았을 뿐 갈래는 갈래다
                 for _h2, n2 in cands[i:]:
                     res.frontier.append({
                         "from_pano": node.pano.pano_id, "pano_id": n2.pano_id,
                         "lat": n2.lat, "lng": n2.lng,
-                        "depth": node.depth + 1, "reason": "call_budget"})
+                        "depth": node.depth + 1, "reason": res.stop_reason})
                 budget_hit = True
                 break
 
