@@ -85,6 +85,9 @@ def main() -> int:
         with RunLog(out, header,
                     image_dir=(APP / "runs" / "images" / out.stem)
                     if a.save_images else None) as log:
+            if hasattr(prov, "on_event"):
+                # provider 쪽 신호(렌더 미안정 등)도 런로그에 싣는다
+                prov.on_event = log.event
             try:
                 if a.warmup:
                     pano = prov.nearest(lat, lng, cfg.snap_radius_m)
@@ -124,11 +127,15 @@ def main() -> int:
               f"가변값이 섞였는지 확인 (docs/10-client-guide.md §3.1)")
     if s.parse_failures:
         print(f"⚠  JSON 파싱 실패 {s.parse_failures}회")
+    unsettled = getattr(prov, "_unsettled", 0)
+    if unsettled:
+        print(f"⚠  프레임 미안정 캡처 {unsettled}회 — 반쯤 로드된 화면이 판정에 "
+              f"들어갔을 수 있다. 잦으면 대기 상수를 올릴 것 (kakao._settle)")
     if res.frontier:
         print(f"\n예산에 걸려 못 간 갈래 {len(res.frontier)}개:")
         for f in res.frontier[:10]:
             print(f"  d{f['depth']:>2} {f['from_pano'] or '(시작)'} → "
-                  f"{f['pano_id'] or '(좌표 밀기)'}  [{f['reason']}]")
+                  f"{f['pano_id']}  [{f['reason']}]")
     return 0
 
 

@@ -34,14 +34,14 @@ def main() -> int:
     ap.add_argument("--provider", default="fixture", choices=providers.NAMES)
     ap.add_argument("--start", required=True, help="lat,lng")
     ap.add_argument("--bearing", type=float, default=0.0,
-                    help="출발 방위각 (0=북). ⚠️ 정렬뿐 아니라 필터로도 쓰인다 — "
-                         "여기서 max_turn_deg(120°)를 넘는 이웃은 아예 안 묻는다")
+                    help="출발 방위각 (0=북). 시작 노드는 이웃을 전부 물으므로 "
+                         "이 값은 어느 쪽을 먼저 물을지(정렬)만 정한다. "
+                         "max_turn_deg 필터는 둘째 스텝부터 진행 방향 기준으로 돈다")
     ap.add_argument("--steps", type=int, default=WalkConfig.max_steps)
     ap.add_argument("--candidates", type=int, default=WalkConfig.max_candidates,
                     help="한 스텝에서 최대 몇 방향까지 물어볼지 (기본 3)")
     ap.add_argument("--probe-all", dest="probe_all", action="store_true", default=None,
-                    help="후보를 항상 전부 물어본다 "
-                         "(기본: 그래프면 전부, 폴백이면 첫 성공에서 멈춤)")
+                    help="후보를 전부 물어본다 (기본값이다 — 끄려면 --first-hit)")
     ap.add_argument("--first-hit", dest="probe_all", action="store_false",
                     help="첫 성공에서 멈춘다. 갈림길을 놓치는 대신 호출이 준다")
     ap.add_argument("--schema", default="walk", choices=sorted(P.SCHEMAS),
@@ -91,6 +91,9 @@ def main() -> int:
         with RunLog(out, header,
                     image_dir=(APP / "runs" / "images" / out.stem)
                     if a.save_images else None) as log:
+            if hasattr(prov, "on_event"):
+                # provider 쪽 신호(렌더 미안정 등)도 런로그에 싣는다
+                prov.on_event = log.event
             try:
                 if a.warmup:
                     pano = prov.nearest(lat, lng, cfg.snap_radius_m)
@@ -122,12 +125,16 @@ def main() -> int:
               f"가변값이 섞였는지 확인 (docs/10-client-guide.md §3.1)")
     if s.parse_failures:
         print(f"⚠  JSON 파싱 실패 {s.parse_failures}회")
+    unsettled = getattr(prov, "_unsettled", 0)
+    if unsettled:
+        print(f"⚠  프레임 미안정 캡처 {unsettled}회 — 반쯤 로드된 화면이 판정에 "
+              f"들어갔을 수 있다. 잦으면 대기 상수를 올릴 것 (kakao._settle)")
     if res.frontier:
         # 가지 않은 갈래. 버리지 않고 보여준다 — 분기 탐색을 붙일 때 이게 입력이다.
         print(f"\n가지 않은 산책로 갈래 {len(res.frontier)}개:")
         for f in res.frontier[:10]:
             print(f"  s{f['from_step']:>3} {f['from_pano']} → {f['heading']:6.1f}° "
-                  f"{f['pano_id'] or '(좌표 밀기)'}")
+                  f"{f['pano_id']}")
     return 0
 
 

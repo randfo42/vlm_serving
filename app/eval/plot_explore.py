@@ -31,7 +31,6 @@ INK = "#1a1a1a"
 TILE = 256
 # 타일 usage policy 가 UA 를 요구한다. 뷰포트 한 장에 타일 십수 개 수준의 소량이다
 UA = "trailwalk-plot/0.1 (local research; one-off dev rendering)"
-M_PER_DEG_LAT = 111_320.0
 
 
 def merc(lat: float, lng: float, z: int) -> tuple[float, float]:
@@ -58,18 +57,15 @@ def collect_latlngs(data: dict) -> tuple[list[dict], list[dict], list[tuple]]:
     edges, fronts, pts = [], [], []
     for p in data["probes"]:
         src = nodes.get(p["from_pano"])
-        if src is None:
+        if src is None or p.get("to_lat") is None:
+            # 좌표 없는 probe 는 그리지 않는다. 여기서 heading 방향으로 좌표를
+            # 밀어 지어내던 시절이 있었는데, 그러면 실측 pano 간선과 우리가
+            # 만든 점이 그림에서 구분되지 않는다. 탐색에서 좌표 밀기를 없앤
+            # 지금은 to_lat 없는 probe 자체가 옛 dump 이거나 상류 버그다.
             continue
-        if p.get("to_lat") is not None:
-            to = (p["to_lat"], p["to_lng"])
-        else:
-            # 폴백 후보는 목표 pano 가 없다. heading 방향으로 12m 민 근사 위치
-            rad = math.radians(p["heading"])
-            to = (src["lat"] + 12 * math.cos(rad) / M_PER_DEG_LAT,
-                  src["lng"] + 12 * math.sin(rad)
-                  / (M_PER_DEG_LAT * math.cos(math.radians(src["lat"]))))
+        to = (p["to_lat"], p["to_lng"])
         edges.append({"a": (src["lat"], src["lng"]), "b": to, "ok": p["is_trail"],
-                      "label": f"{p['from_pano']} → {p['to_pano'] or '(좌표)'}  "
+                      "label": f"{p['from_pano']} → {p['to_pano']}  "
                                f"h{p['heading']}  {'산책로' if p['is_trail'] else '아님'}"})
         pts += [edges[-1]["a"], to]
     for f in data["frontier"]:

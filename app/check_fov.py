@@ -247,8 +247,13 @@ def main() -> int:
     prov = KakaoProvider(key, headless=not a.headed, hide_arrows=False)
     try:
         pano = prov.nearest(lat, lng, a.radius)
-        prov.capture(pano, 0.0)      # 띄워야 노드 응답이 온다 (§7)
-        arrows(prov, pano, outdir)
+        if pano is None:
+            # 첫 세션에서 잡힌 좌표가 두 번째 세션에서 안 잡힐 이유는 없지만,
+            # 그 가정이 깨졌을 때 pano.pano_id 에서 죽는 것보다는 낫다
+            print("✗ 두 번째 세션에서 로드뷰를 못 잡았다 — 화살표 스윕은 건너뛴다")
+        else:
+            prov.capture(pano, 0.0)  # 띄워야 노드 응답이 온다 (§7)
+            arrows(prov, pano, outdir)
     finally:
         prov.close()
 

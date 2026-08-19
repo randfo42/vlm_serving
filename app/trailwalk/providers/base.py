@@ -1,18 +1,18 @@
 """로드뷰 provider 인터페이스.
 
-조사 결과(docs/21-roadview-providers.md) 때문에 인터페이스가 이 모양이다.
-어느 제공자도 "이웃 파노라마 목록"을 주지 않는다. Google 만 JS SDK 에 links[] 가
-있고 한국 커버리지가 없다. 그래서 **그래프 순회를 전제하지 않는다.**
-
-    nearest(lat, lng, r) → 좌표를 pano 로 스냅
+    nearest(lat, lng, r)   → 좌표를 pano 로 스냅. **시작점에서만** 쓴다
+    neighbors(pano)        → 한 발 갈 수 있는 이웃들. **유일한 이동 수단**이다
     capture(pano, heading) → 그 pano 를 heading 방향에서 본 한 화각
 
-"다음 pano" 는 provider 가 아니라 walk.py 가 만든다: 현재 좌표에서 heading 방향으로
-STEP_M 전진한 좌표를 계산하고 다시 nearest 를 부른다. 그래프가 없어도 걸을 수 있고,
-서빙 쪽이 정한 경계("어디로 갈지는 클라이언트 몫")와도 맞는다.
+이동은 이웃 그래프 하나뿐이다. 처음엔 이웃을 얻을 길이 없다고 보고 "heading
+방향으로 N미터 민 좌표를 다시 스냅" 하는 방식으로 걸었는데, 로드뷰 화면의
+흰 화살표가 바로 그 데이터였다 (→ docs/21-roadview-providers.md §1.3). 그
+폴백은 없앴다 — 지도가 알려준 지점으로만 걷고, 좌표를 지어내지 않는다
+(→ docs/20-app-design.md §3).
 
 capture 는 **인코딩된 이미지 바이트**를 돌려준다. data URI 로 바꾸는 일은
 imaging.py 만 한다 — 규칙이 한 군데에만 있어야 조용히 깨지지 않는다.
+화각도 provider 가 정한다 (→ capture 독스트링).
 """
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
