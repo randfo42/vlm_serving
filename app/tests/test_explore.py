@@ -339,3 +339,58 @@ def test_시간_예산은_노드_경계가_아니라_후보마다_걸린다(monk
     # 어느 쪽도 버리지 않는다 — 판정을 안 받았을 뿐 갈래는 갈래다
     assert {f["pano_id"] for f in res.frontier} == {"A", "B", "C", "D"}
     assert {f["reason"] for f in res.frontier} == {"time_budget"}
+
+
+# ── 경고 ───────────────────────────────────────────────────────────────────
+
+def test_캡처_실패가_결과에_남는다():
+    """⚠️ 조용한 실패였다. 캡처 실패는 판정이 아니라 probes 에 못 넣고, 갈래가
+    사라진 것도 아니라 frontier 에도 안 넣었다 — 그래서 후보가 전부 실패해도
+    런이 exhausted 로 정상 종료한 것처럼 보였고, log=None 이면 흔적조차 없었다.
+    """
+    p = Provider({"S": [nb("A", 0.0), nb("B", 90.0)], "A": [], "B": []})
+
+    def boom(_pano, _hdg):
+        raise RuntimeError("렌더 실패")
+
+    p.capture = boom
+    res = run(p, {})
+    assert res.stop_reason == "exhausted"        # 런 자체는 계속된다
+    w = next(w for w in res.warnings if w["code"] == "capture_failed")
+    assert w["count"] == 2, "방향마다 세야 한다"
+
+
+def test_no_coverage는_stop_reason과_warning_둘_다다():
+    """다른 질문에 답하는 두 필드다 — "결과가 완결됐나" 와 "사용자에게 뭐라고
+    말하나". 웹은 뒤쪽만 읽어도 된다."""
+    p = Provider({})
+    p.nearest = lambda *a, **k: None
+    res = run(p, {})
+    assert res.stop_reason == "no_coverage"
+    w = next(w for w in res.warnings if w["code"] == "no_coverage")
+    assert "로드뷰가 없다" in w["message"]
+
+
+def test_이웃_로드_실패는_한_줄로_모인다():
+    """갈래마다 나므로 1회성이면 시끄럽다 — 실주행에서 22노드 중 12개였다."""
+    p = Provider({"S": [nb("A", 0.0), nb("B", 90.0)], "A": [], "B": []})
+    res = run(p, {("S", 0.0): True, ("S", 90.0): True})
+    w = next(w for w in res.warnings if w["code"] == "neighbors_missing")
+    assert w["count"] == 2
+
+
+def test_이미지_무시는_터지지_않고_반환된다():
+    """한때 stop_reason 을 세팅한 **직후 raise** 했다. 그 res 는 호출자에게
+    반환되지 않으므로 런로그에는 "aborted" 가 남았다 — 세팅한 값이 아무도
+    못 읽는 객체 위에 있었다."""
+    from trailwalk.vlm import ImageIgnoredError
+
+    p = Provider({"S": [nb("A", 0.0)], "A": []})
+
+    class Ignoring(Client):
+        def assess(self, uri, *, heading=None):
+            raise ImageIgnoredError("prompt_tokens 90 < 198")
+
+    res = run(p, {}, client=Ignoring(p, {}))
+    assert res.stop_reason == "image_ignored"
+    assert [w["code"] for w in res.warnings] == ["image_ignored"]

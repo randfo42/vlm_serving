@@ -99,6 +99,10 @@ class RunLog:
         한 건씩 즉시 내보내지 않는 이유: neighbors_missing 은 갈래마다 나므로
         실주행에서 노드 22개 중 12개까지 나온다. 한 줄씩 올리면 진짜 신호가
         묻힌다. 대신 상세는 event 로 이미 남아 있다.
+
+        `count=` 를 주면 그만큼 더한다. 호출자가 이미 합산해 들고 있는 것들
+        (client.stats 의 캐시 미스 등)을 한 번에 넘기기 위한 것이고, 안 주면
+        1이다 — 무조건 +1 하면 그런 총계가 조용히 1로 줄어든다.
         """
         # code 검증은 **여기서** 한다. finish() 까지 미루면 런이 다 끝난 뒤에
         # 터지고, finish 는 finally 에서 불리므로 run_end 가 통째로 날아간다.
@@ -106,7 +110,7 @@ class RunLog:
             raise warn_mod.UnknownWarning(
                 f"모르는 경고 code: {code!r}. trailwalk/warn.py 의 TEXT 에 추가할 것")
         t = self._tallies.setdefault(code, {"count": 0})
-        t["count"] += 1
+        t["count"] += int(detail.get("count", 1))
         t.update({k: v for k, v in detail.items() if k != "count"})
 
     def _tallied(self) -> list[dict]:

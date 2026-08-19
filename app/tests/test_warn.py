@@ -113,3 +113,16 @@ def test_문구를_못_만들어도_run_end는_남는다(tmp_path):
     assert end["stop_reason"] == "exhausted"
     w = end["warnings"][0]
     assert w["code"] == "cache_miss" and "만들지 못했다" in w["message"]
+
+
+def test_이미_합산된_총계는_그대로_더한다(tmp_path):
+    """⚠️ 무조건 +1 하면 client.stats 의 캐시 미스 30건이 런로그에 count:1 로
+    남는다. stdout 은 따로 계산해 맞게 찍히므로 사람은 못 알아채고, JSONL 만
+    읽는 소비자(웹)에게만 조용히 축소된 수치가 간다."""
+    out = tmp_path / "r.jsonl"
+    with RunLog(out, {}) as log:
+        log.tally("cache_miss", count=30, calls=200)
+        log.finish(stop_reason="exhausted")
+    w = next(r for r in _rows(out) if r["type"] == "run_end")["warnings"][0]
+    assert w["count"] == 30
+    assert "30/200" in w["message"]

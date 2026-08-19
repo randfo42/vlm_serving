@@ -59,6 +59,7 @@ from collections import deque
 from dataclasses import dataclass, field
 
 from . import geo, settings
+from . import warn as warn_mod
 from .imaging import view_to_data_uri
 from .providers.base import Neighbor, Pano, ProviderError
 from .vlm import ImageIgnoredError, ServerDeadError, VlmError
@@ -99,6 +100,10 @@ class ExploreResult:
     # 예산(거리/시간)이나 이웃 로드 실패로 못 간 갈래. 이어서 탐색할 때의 입력
     frontier: list[dict] = field(default_factory=list)  # from_pano, pano_id, 좌표, depth, reason
     stop_reason: str = ""          # exhausted = 갈 곳을 다 갔다. 나머지는 예산/오류
+    # 런 도중 사람이 알아야 할 일 (→ trailwalk/warn.py). stop_reason 과 역할이
+    # 다르다: 저쪽은 "완결된 결과인가", 이쪽은 "믿어도 되나 · 뭐라고 말하나".
+    # log=None 으로 도는 호출(테스트·인프로세스 웹)에서 유일한 창구이기도 하다
+    warnings: list[dict] = field(default_factory=list)
     calls: int = 0
     wall_s: float = 0.0
 
@@ -171,6 +176,30 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
     cfg = cfg or ExploreConfig.from_settings(settings.SETTINGS)
     res = ExploreResult()
     t0 = time.time()
+    tallies: dict[str, dict] = {}
+
+    def warn(code: str, **detail) -> None:
+        """1회성 경고. 결과와 런로그 **양쪽에** 넣는다 — 갈라지면 log=None 인
+        호출에서만 신호가 사라지고, 그게 정확히 테스트가 도는 조건이다."""
+        res.warnings.append(warn_mod.make(code, **detail))
+        if log:
+            log.warn(code, **detail)
+
+    def tally(code: str, **detail) -> None:
+        """집계형. 갈래마다 나는 것들은 런 끝에 한 줄로 모은다."""
+        t = tallies.setdefault(code, {"count": 0})
+        t["count"] += 1
+        t.update({k: v for k, v in detail.items() if k != "count"})
+        if log:
+            log.tally(code, **detail)
+
+    def done(reason: str) -> ExploreResult:
+        """종료 처리 한 곳. 집계형을 결과에 flatten 하고 시계를 멈춘다."""
+        res.stop_reason = reason
+        for code, d in tallies.items():
+            res.warnings.append(warn_mod.make(code, **d))
+        res.wall_s = time.time() - t0
+        return res
 
     def probe(p: Pano, hdg: float, depth: int) -> bool | None:
         """한 방향을 물어본다. None 은 '판정 불가' (캡처 실패)."""
@@ -180,6 +209,10 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
             if log:
                 log.event("capture_failed", step=depth, pano_id=p.pano_id,
                           heading=round(hdg, 1), error=f"{type(e).__name__}: {e}")
+            # 판정이 아니라서 probes 에 못 넣고, 갈래가 사라진 것도 아니라서
+            # frontier 에도 안 넣는다. 그래서 한때 **아무 데도 안 남았다** —
+            # 후보가 전부 실패해도 런이 exhausted 로 정상 종료한 것처럼 보였다
+            tally("capture_failed", pano_id=p.pano_id, heading=round(hdg, 1))
             return None
         uri, src_format = view_to_data_uri(raw, cfg.image)
         v = client.assess(uri, heading=hdg)
@@ -202,16 +235,14 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
         if log:
             log.event("provider_error", step=0,
                       error=f"{type(e).__name__}: {str(e).splitlines()[0]}")
-        res.stop_reason = "provider_error"
-        res.wall_s = time.time() - t0
-        return res
+        warn("provider_error", error=f"{type(e).__name__}: {str(e).splitlines()[0]}")
+        return done("provider_error")
     if start_pano is None:
         # 시작점에 로드뷰가 없다. 갈래 하나가 아니라 탐색 전체가 성립하지 않는다
-        res.stop_reason = "no_coverage"
         if log:
             log.event("no_coverage", step=0, lat=start[0], lng=start[1])
-        res.wall_s = time.time() - t0
-        return res
+        warn("no_coverage", radius_m=cfg.snap_radius_m, lat=start[0], lng=start[1])
+        return done("no_coverage")
 
     # 거리 예산의 기준점. 요청 좌표가 아니라 **스냅된 pano** 다 (→ yaml 주석)
     origin = (start_pano.lat, start_pano.lng)
@@ -251,6 +282,7 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
             # frontier 에 남긴다. 이어서 탐색할 때 그대로 입력이 된다.
             if log:
                 log.event("neighbors_missing", step=node.depth, pano_id=node.pano.pano_id)
+            tally("neighbors_missing", pano_id=node.pano.pano_id)
             res.frontier.append(leftover(node, "neighbors_missing"))
             continue
 
@@ -272,14 +304,18 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
 
             try:
                 ok = probe(node.pano, hdg, node.depth)
-            except ImageIgnoredError:
-                res.stop_reason = "image_ignored"; raise
-            except ServerDeadError:
-                res.stop_reason = "server_dead"; raise
-            except VlmError as e:
+            except (ImageIgnoredError, ServerDeadError, VlmError) as e:
+                # 한때 앞의 둘은 stop_reason 을 세팅한 **직후 raise** 했다.
+                # 그 res 는 호출자에게 반환되지 않으므로 런로그에는 "aborted"
+                # 가 남았다 — 세팅한 값이 아무도 못 읽는 객체 위에 있었다.
+                # 시끄럽게 죽는 역할은 러너가 stop_reason 을 보고 맡는다.
+                code = ("image_ignored" if isinstance(e, ImageIgnoredError)
+                        else "server_dead" if isinstance(e, ServerDeadError)
+                        else "vlm_error")
                 if log:
-                    log.event("vlm_error", step=node.depth, error=str(e)[:400])
-                res.stop_reason = "vlm_error"
+                    log.event(code, step=node.depth, error=str(e)[:400])
+                warn(code, error=str(e)[:400])
+                res.stop_reason = code
                 budget_hit = True
                 break
 
@@ -304,7 +340,4 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
             res.frontier += drain()
             break
 
-    if not res.stop_reason:
-        res.stop_reason = "exhausted"
-    res.wall_s = time.time() - t0
-    return res
+    return done(res.stop_reason or "exhausted")

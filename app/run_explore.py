@@ -23,12 +23,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from trailwalk import prompt as P
 from trailwalk import providers, settings
+from trailwalk import warn as warn_mod
 from trailwalk.explore import ExploreConfig, explore
 from trailwalk.imaging import view_to_data_uri
 from trailwalk.runlog import RunLog
 from trailwalk.vlm import VlmClient
 
 APP = Path(__file__).resolve().parent
+
+# provider 이벤트 중 **결과 품질에 영향을 주는** 것들. 나머지는 런로그에만 남는다
+WARN_KINDS = {"tiles_timeout", "render_unsettled"}
+
+# 이 stop_reason 으로 끝난 런은 결과를 믿으면 안 된다 → stderr + exit 2.
+# 무인 실행에서 exit 0 으로 끝나면 실패를 감지할 수단이 없다
+FATAL = {"image_ignored", "server_dead", "vlm_error", "provider_error", "no_coverage"}
 
 
 def main() -> int:
@@ -74,13 +82,34 @@ def main() -> int:
           f"start=({lat},{lng})  반경 {cfg.max_distance_m:.0f}m · 최대 {cfg.max_seconds:.0f}s\n"
           f"로그: {out}\n")
     res = None
+    # 루프가 모르는 신호(provider 렌더 품질, 클라이언트 캐시/파싱)를 여기서 모은다.
+    # res.warnings 와 합쳐서 한 번에 찍는다 — 신호를 추가할 때마다 출력 블록을
+    # 늘리던 자리다
+    run_warnings: list[dict] = []
+
+    def tally(log, code, **detail):
+        """런로그와 stdout 이 같은 수를 보게 한다. count 규칙은 RunLog.tally 와 같다."""
+        log.tally(code, **detail)
+        n = int(detail.get("count", 1))
+        for w in run_warnings:
+            if w["code"] == code:
+                merged = {**detail, "count": w["count"] + n}
+                w.update(warn_mod.make(code, **merged))
+                return
+        run_warnings.append(warn_mod.make(code, **{**detail, "count": n}))
+
     try:
         with RunLog(out, header,
                     image_dir=(APP / "runs" / "images" / out.stem)
                     if st.run.save_images else None) as log:
             if hasattr(prov, "on_event"):
-                # provider 쪽 신호(렌더 미안정 등)도 런로그에 싣는다
-                prov.on_event = log.event
+                # provider 쪽 신호도 런로그에 싣되, 결과 품질에 영향을 주는
+                # 것들은 경고로도 올린다 — 루프는 provider 내부를 모른다
+                def on_event(kind, **kw):
+                    log.event(kind, **kw)
+                    if kind in WARN_KINDS:
+                        tally(log, kind)
+                prov.on_event = on_event
             try:
                 if st.run.warmup:
                     pano = prov.nearest(lat, lng, cfg.snap_radius_m)
@@ -92,6 +121,10 @@ def main() -> int:
                 res = explore(prov, client, (lat, lng), bearing, cfg, log)
             finally:
                 s = client.stats
+                if s.cache_misses:
+                    tally(log, "cache_miss", count=s.cache_misses, calls=s.calls)
+                if s.parse_failures:
+                    tally(log, "parse_failure", count=s.parse_failures)
                 log.finish(stop_reason=res.stop_reason if res else "aborted",
                            nodes=len(res.nodes) if res else 0,
                            frontier=len(res.frontier) if res else 0,
@@ -115,20 +148,23 @@ def main() -> int:
     print(f"노드 {len(res.nodes)} · 판정 {len(res.probes)} (산책로 {trails}) · "
           f"VLM 호출 {s.calls} · {res.wall_s:.0f}s"
           + (f" ({s.total_ms / s.calls / 1000:.2f}s/호출)" if s.calls else ""))
-    if s.cache_misses:
-        print(f"⚠  프리픽스 캐시 미스 {s.cache_misses}/{s.calls} — system turn 에 "
-              f"가변값이 섞였는지 확인 (docs/10-client-guide.md §3.1)")
-    if s.parse_failures:
-        print(f"⚠  JSON 파싱 실패 {s.parse_failures}회")
-    unsettled = getattr(prov, "_unsettled", 0)
-    if unsettled:
-        print(f"⚠  프레임 미안정 캡처 {unsettled}회 — 반쯤 로드된 화면이 판정에 "
-              f"들어갔을 수 있다. 잦으면 대기 상수를 올릴 것 (kakao._settle)")
+    for w in res.warnings + run_warnings:
+        print(f"⚠  {w['message']}")
     if res.frontier:
-        print(f"\n예산에 걸려 못 간 갈래 {len(res.frontier)}개:")
+        print(f"\n반경·예산에 걸려 못 간 갈래 {len(res.frontier)}개:")
         for f in res.frontier[:10]:
             print(f"  d{f['depth']:>2} {f['from_pano'] or '(시작)'} → "
                   f"{f['pano_id']}  [{f['reason']}]")
+
+    if res.stop_reason in FATAL:
+        # 스택트레이스 대신 읽을 수 있는 한 줄. providers.make() 실패가 이미
+        # 쓰는 방식이다. 무인 실행에서 exit 0 으로 끝나면 실패를 감지할
+        # 수단이 없다 — server_dead 는 사람이 서버를 재시작해야 하는 상태고,
+        # image_ignored 는 판정이 전부 환각인 런이다
+        msg = next((w["message"] for w in res.warnings
+                    if w["code"] == res.stop_reason), res.stop_reason)
+        print(f"✗ {msg}", file=sys.stderr)
+        return 2
     return 0
 
 
