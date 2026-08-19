@@ -35,12 +35,18 @@ python app/run_explore.py --provider fixture --start 37.5665,126.9780 --max-call
 
 ```
 멈춘 이유: max_steps
-스텝 6 · VLM 호출 7 · 26s (3.73s/호출)
+스텝 6 · VLM 호출 18 · 38s (2.08s/호출)
 ```
+
+스텝보다 호출이 많은 것이 정상이다 — fixture 의 격자 그래프는 갈림길마다
+후보가 3개이고, 기본값이 "후보를 전부 묻기" 다 (`--first-hit` 로 바꿀 수 있다).
 
 첫 호출이 13초쯤 걸리면 정상이다 (콜드 스타트). `--warmup` 으로 측정 밖으로 뺀다.
 
-### 3. 실제 로드뷰 — ⚠️ 아직 미검증
+### 3. 실제 로드뷰 — ✅ 검증됨 (2026-08-17)
+
+청계천에서 실제로 주행했다 (20스텝 229m). 차도를 거부하고 하천 보행로를 따라갔다
+(`docs/23-open-questions.md` §1). 아래는 처음 붙일 때 막히는 자리들이다.
 
 키는 `app/.env` 에 둔다 (형식: `app/.env.example`). 커밋되지 않고, 코드가
 `trailwalk.config.load_env()` 로 알아서 읽으므로 명령줄에 붙일 필요가 없다.
@@ -56,6 +62,12 @@ python app/run_walk.py --provider kakao \
 
 `check_kakao.py` 는 서울 좌표 6곳(**차도 대조군 포함**)에서 pano 가 잡히는지,
 실제로 그려지는지를 표로 준다. 차도까지 실패하면 커버리지가 아니라 설정 문제다.
+
+화각을 재거나 화살표가 그림과 맞는지 보려면 (VLM 불필요):
+
+```bash
+python app/check_fov.py            # zoom 0 화각 측정 + 스윕 이미지 15장
+```
 
 콘솔에서 켜야 하는 것이 **두 가지**다. 하나만 해도 증상은 똑같이 "안 뜸" 이다:
 
@@ -119,6 +131,34 @@ for l in open(sys.argv[1]):
 
 보존할 런은 `runs/keep/` 으로 옮긴다 (`runs/*.jsonl` 은 gitignore).
 
+### 판정을 눈으로 감사한다
+
+`--save-images` 를 켜면 probe 이미지가 `runs/images/<런이름>/` 에 쌓이고,
+런로그의 각 probe 줄에 `image` 필드로 파일명이 붙는다.
+
+```bash
+python app/run_explore.py --provider kakao --start 37.5695,127.0050 \
+    --max-calls 40 --save-images
+# runs/images/<런이름>/001_s00_1039598318_091.4_T.png
+#                     ↑순서 ↑depth ↑pano   ↑방위  ↑판정
+```
+
+이름순 정렬이 곧 호출순이라 판정을 따라가며 볼 수 있다. **기본은 꺼져 있다** —
+지도 사업자 약관상 이미지 캐싱이 회색지대다 (`docs/23-open-questions.md` §2).
+
+### explore 결과를 지도 위에서 본다
+
+`run_explore.py --dump` 가 낸 JSON 을 SVG 한 장으로 만든다. 배경은 OSM 타일을
+base64 로 내장하므로 파일 하나로 자족적이다 (오프라인이면 `--no-map`).
+
+```bash
+python app/run_explore.py --provider kakao --start 37.5695,127.0050 \
+    --max-calls 40 --dump /tmp/explore.json
+python app/eval/plot_explore.py /tmp/explore.json -o /tmp/explore.svg
+```
+
+산책로 = 초록 실선 · 아님 = 빨강 점선 · 미탐색(frontier) = 회색 점선 원.
+
 ---
 
 ## 반드시 아는 것
@@ -130,6 +170,11 @@ for l in open(sys.argv[1]):
 | 3 | **system 프롬프트는 파일 + 해시 핀이다.** 고치면 해시도 고칠 것 | `20-app-design.md` §4 |
 | 4 | **스키마에만 넣고 프롬프트에서 설명 안 한 필드는 쓰레기를 낸다** | `20-app-design.md` §4 |
 | 5 | **동시 요청 금지.** 순차만. 병렬은 서빙 쪽 문제 | `../docs/04-b1-results.md` §4 |
-| 6 | **이웃 pano 목록 API 는 없다.** 좌표를 직접 민다 | `21-roadview-providers.md` §1.3 |
+| 6 | **이웃 pano 그래프로만 걷는다.** 좌표를 밀어 이동하던 폴백은 없앴다 | `20-app-design.md` §3 |
 | 7 | **500 연속 3회면 재시도를 멈춘다.** 자체 복구 안 됨 | `../docs/11-server-ops.md` §5 |
 | 8 | **코스 폴리라인이 아직 없다.** 정량 평가의 구멍 | `22-labels.md` §2 |
+| 9 | **차량 촬영 pano 와 도보 촬영 pano 는 그래프로 안 이어져 있다.** 시작점이 어느 계열에 스냅되느냐가 결과를 가른다 | `23-open-questions.md` §7 |
+| 10 | **화각은 provider 가 정한다.** kakao 는 90.9° 고정, fixture 는 사진마다 다르다 — 둘을 화각 축에서 비교하지 말 것 | `23-open-questions.md` §3 |
+| 11 | **판정은 *지점*, 캡처는 *방향*이다.** 축 밖 뷰를 정확도 표에 섞지 말 것 | `23-open-questions.md` §6 |
+| 12 | **빈 이웃 목록 = 로드 실패**(`neighbors_missing`). 길의 끝이 아니다 | `23-open-questions.md` §7 |
+| 13 | **시작점은 화살표를 전부 묻는다.** 호출 수 = 화살표 수, 하나라도 산책로면 산책로 | `20-app-design.md` §3 |
