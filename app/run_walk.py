@@ -33,9 +33,10 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--provider", default="fixture", choices=providers.NAMES)
     ap.add_argument("--start", required=True, help="lat,lng")
-    ap.add_argument("--bearing", type=float, default=0.0, help="출발 방위각 (0=북)")
+    ap.add_argument("--bearing", type=float, default=0.0,
+                    help="출발 방위각 (0=북). ⚠️ 정렬뿐 아니라 필터로도 쓰인다 — "
+                         "여기서 max_turn_deg(120°)를 넘는 이웃은 아예 안 묻는다")
     ap.add_argument("--steps", type=int, default=WalkConfig.max_steps)
-    ap.add_argument("--step-m", type=float, default=WalkConfig.step_m)
     ap.add_argument("--candidates", type=int, default=WalkConfig.max_candidates,
                     help="한 스텝에서 최대 몇 방향까지 물어볼지 (기본 3)")
     ap.add_argument("--probe-all", dest="probe_all", action="store_true", default=None,
@@ -56,14 +57,17 @@ def main() -> int:
                     help="첫 호출 전에 버리는 요청을 1회 보낸다. 유휴 뒤 첫 요청이 "
                          "13초까지 튀므로, 지연을 재는 런에서는 켤 것")
     ap.add_argument("--out", default=None, help="런로그 경로 (기본: app/runs/<시각>.jsonl)")
+    ap.add_argument("--save-images", action="store_true",
+                    help="probe 이미지를 app/runs/images/<런이름>/ 에 남긴다 "
+                         "(판정을 눈으로 감사할 때. 약관 → docs/23-open-questions.md §2)")
     a = ap.parse_args()
 
     lat, lng = (float(x) for x in a.start.split(","))
     out = Path(a.out) if a.out else (
         APP / "runs" / f"{datetime.now(UTC):%Y%m%dT%H%M%SZ}-{a.provider}.jsonl")
 
-    cfg = WalkConfig(step_m=a.step_m, max_steps=a.steps,
-                     probe_all=a.probe_all, max_candidates=a.candidates)
+    cfg = WalkConfig(max_steps=a.steps, max_candidates=a.candidates,
+                     **({} if a.probe_all is None else {"probe_all": a.probe_all}))
     client = VlmClient(url=a.url, schema_name=a.schema, system_version=a.prompt)
     try:
         prov = providers.make(a.provider, headless=not a.headed)
@@ -77,19 +81,21 @@ def main() -> int:
 
     header = {"provider": prov.name, "schema": a.schema, "url": a.url,
               "start": [lat, lng], "start_bearing": a.bearing,
-              "config": vars(cfg) | {"side_offsets": list(cfg.side_offsets)},
+              "config": vars(cfg),
               "prompt": P.fingerprint(a.prompt)}
 
     print(f"provider={prov.name}  prompt={a.prompt}  schema={a.schema}  "
           f"start=({lat},{lng}) bearing={a.bearing}\n로그: {out}\n")
     res = None
     try:
-        with RunLog(out, header) as log:
+        with RunLog(out, header,
+                    image_dir=(APP / "runs" / "images" / out.stem)
+                    if a.save_images else None) as log:
             try:
                 if a.warmup:
                     pano = prov.nearest(lat, lng, cfg.snap_radius_m)
                     if pano:
-                        uri, _ = view_to_data_uri(prov.capture(pano, a.bearing, cfg.fov_deg))
+                        uri, _ = view_to_data_uri(prov.capture(pano, a.bearing))
                         t = time.perf_counter()
                         client.warmup(uri)
                         log.event("warmup", ms=round((time.perf_counter() - t) * 1000, 1))
@@ -107,8 +113,7 @@ def main() -> int:
         prov.close()
 
     s = client.stats
-    print(f"멈춘 이유: {res.stop_reason}"
-          + ("  (이웃 그래프 사용)" if res.used_graph else "  (좌표 밀기 폴백)"))
+    print(f"멈춘 이유: {res.stop_reason}")
     print(f"스텝 {res.steps} · VLM 호출 {s.calls} · {res.wall_s:.0f}s"
           + (f" ({s.total_ms / s.calls / 1000:.2f}s/호출)" if s.calls else ""))
     # 조용히 깨지는 신호는 요약에 반드시 띄운다. 로그를 안 열어봐도 보이게.

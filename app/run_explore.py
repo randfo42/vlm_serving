@@ -35,7 +35,8 @@ def main() -> int:
     ap.add_argument("--provider", default="fixture", choices=providers.NAMES)
     ap.add_argument("--start", required=True, help="lat,lng")
     ap.add_argument("--bearing", type=float, default=0.0,
-                    help="폴백(그래프 없는 provider)에서 전방향 후보의 기준각. 그래프에서는 무시됨")
+                    help="시작점 후보를 어느 방위부터 물을지 (0=북). 이웃을 전부 "
+                         "묻기 때문에 순서만 바뀐다 — 예산이 모자랄 때만 결과가 갈린다")
     ap.add_argument("--max-calls", type=int, default=ExploreConfig.max_vlm_calls,
                     help="VLM 호출 예산. 탐색 비용의 실질 상한 (~2.2s/호출)")
     ap.add_argument("--max-depth", type=int, default=ExploreConfig.max_depth,
@@ -50,6 +51,9 @@ def main() -> int:
     ap.add_argument("--warmup", action="store_true",
                     help="첫 호출 전에 버리는 요청을 1회 보낸다. 지연을 재는 런에서는 켤 것")
     ap.add_argument("--out", default=None, help="런로그 경로 (기본: app/runs/<시각>-explore.jsonl)")
+    ap.add_argument("--save-images", action="store_true",
+                    help="probe 이미지를 app/runs/images/<런이름>/ 에 남긴다 "
+                         "(판정을 눈으로 감사할 때. 약관 → docs/23-open-questions.md §2)")
     ap.add_argument("--dump", default=None,
                     help="탐색 결과(nodes·probes·frontier)를 JSON 으로 저장. "
                          "플롯과 웹 UI 가 소비하는 형태다 (좌표·판정만 — 이미지 없음)")
@@ -71,20 +75,21 @@ def main() -> int:
 
     header = {"provider": prov.name, "mode": "explore", "schema": a.schema, "url": a.url,
               "start": [lat, lng], "start_bearing": a.bearing,
-              "config": vars(cfg) | {"side_offsets": list(cfg.side_offsets),
-                                     "start_offsets": list(cfg.start_offsets)},
+              "config": vars(cfg),
               "prompt": P.fingerprint(a.prompt)}
 
     print(f"provider={prov.name}  prompt={a.prompt}  schema={a.schema}  "
           f"start=({lat},{lng})  예산 {a.max_calls}호출 · depth {a.max_depth}\n로그: {out}\n")
     res = None
     try:
-        with RunLog(out, header) as log:
+        with RunLog(out, header,
+                    image_dir=(APP / "runs" / "images" / out.stem)
+                    if a.save_images else None) as log:
             try:
                 if a.warmup:
                     pano = prov.nearest(lat, lng, cfg.snap_radius_m)
                     if pano:
-                        uri, _ = view_to_data_uri(prov.capture(pano, a.bearing, cfg.fov_deg))
+                        uri, _ = view_to_data_uri(prov.capture(pano, a.bearing))
                         t = time.perf_counter()
                         client.warmup(uri)
                         log.event("warmup", ms=round((time.perf_counter() - t) * 1000, 1))
@@ -103,15 +108,14 @@ def main() -> int:
     if a.dump:
         Path(a.dump).write_text(json.dumps(
             {"start": [lat, lng], "stop_reason": res.stop_reason,
-             "used_graph": res.used_graph, "calls": res.calls,
+             "calls": res.calls,
              "nodes": res.nodes, "probes": res.probes, "frontier": res.frontier},
             ensure_ascii=False, indent=1), encoding="utf-8")
         print(f"결과 JSON: {a.dump}")
 
     s = client.stats
     trails = sum(1 for p in res.probes if p["is_trail"])
-    print(f"멈춘 이유: {res.stop_reason}"
-          + ("  (이웃 그래프 사용)" if res.used_graph else "  (좌표 밀기 폴백)"))
+    print(f"멈춘 이유: {res.stop_reason}")
     print(f"노드 {len(res.nodes)} · 판정 {len(res.probes)} (산책로 {trails}) · "
           f"VLM 호출 {s.calls} · {res.wall_s:.0f}s"
           + (f" ({s.total_ms / s.calls / 1000:.2f}s/호출)" if s.calls else ""))
