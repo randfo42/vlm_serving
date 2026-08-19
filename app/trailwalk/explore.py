@@ -54,9 +54,8 @@ from dataclasses import dataclass, field
 
 from . import geo, settings
 from .imaging import view_to_data_uri
-from .providers.base import Pano
+from .providers.base import Neighbor, Pano, ProviderError
 from .vlm import ImageIgnoredError, ServerDeadError, VlmError
-from .walk import _candidates
 
 
 @dataclass
@@ -100,6 +99,58 @@ class ExploreResult:
     stop_reason: str = ""          # exhausted = 갈 곳을 다 갔다. 나머지는 예산/오류
     calls: int = 0
     wall_s: float = 0.0
+
+
+def _candidates(provider, pano: Pano, bearing: float, came_from: str | None,
+                visited: set[str], cfg: ExploreConfig) -> tuple[list[tuple[float, Neighbor]], bool]:
+    """갈 만한 방향들을 **진행 방향에 가까운 순으로**. (후보, 이웃을 얻었나).
+
+    맨 앞이 "정면" 이고, 그 방위는 이웃의 **실측 방위각**이다 (노드 JSON 의
+    `spot[].pan`). 우리가 각도를 지어내는 자리는 없다.
+
+    시작 노드(`came_from is None`)는 후보를 **하나도 안 뺀다** — 아래 참조.
+
+    두 번째 값이 False 면 **이웃 목록 자체를 못 얻은 것**이다 — 갈래가 없는
+    것과 구분해야 한다. 빈 후보 목록은 "이웃은 있는데 전부 온 길/기방문"
+    (진짜 막다른 길)을 뜻한다.
+    """
+    try:
+        nbrs = provider.neighbors(pano)
+    except ProviderError:
+        raise           # provider 가 이름 붙여 터뜨린 실패다 (형식 변경 등).
+                        # neighbors_missing 으로 뭉개면 원인이 소실된다
+    except Exception:
+        nbrs = []
+    if not nbrs:
+        return [], False
+
+    # 온 길과 이미 밟은 곳을 뺀다. 이게 그래프를 쓰는 가장 큰 이유다 —
+    # 각도로 어림하지 않고 정확히 지운다.
+    fresh = [n for n in nbrs
+             if n.pano_id != came_from and n.pano_id not in visited]
+    fresh.sort(key=lambda n: geo.angle_diff(n.heading, bearing))
+
+    if came_from is None:
+        # ── 시작 노드: 화살표를 하나도 빼지 않는다 ──
+        #
+        # 시작점 판정은 "여기서 갈 수 있는 길이 하나라도 산책로인가" 이므로
+        # 갈 수 있는 방향을 전부 봐야 한다. 호출 수 = 화살표 개수.
+        return [(n.heading, n) for n in fresh], True
+
+    # 각도로 거르지 않는다. 예전엔 max_turn_deg(walk 120°)로 U턴을 막았는데,
+    # U턴은 이미 위에서 came_from/visited 가 **pano_id 로 정확히** 막는다.
+    # 각도 필터가 실제로 한 일은 두 가지뿐이었다:
+    #
+    #   - 시작 노드에서 사용자가 준 bearing 이 지도의 갈래를 지웠다. 청계천
+    #     실측: 이웃이 동 91.4°/서 267.8° 인데 bearing 45 를 주면 서쪽이
+    #     137° 로 걸려 아예 안 물어보고 frontier 에도 안 남았다. 그래서 시작
+    #     노드는 위에서 면제됐다.
+    #   - 남은 자리에서도 `turnable or fresh` 폴백 때문에 하드 필터가 아니라
+    #     선호도였다. 전멸하면 통째로 무시됐다.
+    #
+    # explore 는 이미 180(=필터 없음)으로 돌고 있었고 문제가 없었다. 정렬이
+    # 이미 정면을 앞에 두므로 자르기만 하면 된다.
+    return [(n.heading, n) for n in fresh[:cfg.max_candidates]], True
 
 
 @dataclass
