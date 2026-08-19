@@ -216,6 +216,23 @@ WEBP를 보내면 서버는 **에러를 내지 않는다.** 200을 반환하고,
 | `content`를 JSON 파싱 성공 | 실패 시 재시도 대상 |
 | `usage.prompt_tokens_details.cached_tokens > 0` | 0이면 프리픽스 캐시가 깨졌다는 신호 |
 
+### 4.1 본문 값의 타입은 서버가 보증한다 — 클라이언트는 재검증하지 않는다
+
+클라이언트는 `content`를 JSON 파싱한 뒤 값을 그대로 믿는다(`bool(obj["is_trail"])`).
+`is_trail`이 JSON **boolean이 아니라 문자열로 오면 판정이 조용히 뒤집힌다** —
+`bool("false")`는 True다. 이게 사고가 아닌 유일한 이유는 §3.1의
+`"strict": true` json_schema를 서버가 강제하기 때문이다.
+
+그래서 이것은 계약이다:
+
+- 서버는 `response_format`의 json_schema를 **strict로 강제해야 한다.**
+  서버 교체·업그레이드로 strict 지원이 빠지면 클라이언트 쪽 증상 없이
+  판정만 오염된다 — 서빙 쪽 변경 시 이 항목을 체크리스트로 볼 것.
+- 스키마의 `required`에 `is_trail`이 반드시 들어간다. 결측이면 클라이언트는
+  KeyError로 죽는다 — 조용한 오판보다는 낫지만 계약 위반이다.
+- `confidence`(eval 스키마)는 결측 시 `null`로 기록될 뿐 검증되지 않는다.
+  범위(0~1)를 벗어난 값도 그대로 통과한다는 뜻이다.
+
 ---
 
 ## 5. 에러 처리

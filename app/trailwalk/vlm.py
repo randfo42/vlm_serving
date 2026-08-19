@@ -179,6 +179,10 @@ class VlmClient:
         self.stats.calls += 1
         self.stats.total_ms += ms
 
+        # 본문 값은 재검증하지 않는다 — §3.1 의 strict json_schema 를 서버가
+        # 강제한다는 계약 위에서만 안전하다. is_trail 이 boolean 이 아니라
+        # 문자열로 오면 bool("false") is True 라 판정이 조용히 뒤집힌다
+        # (→ docs/10-client-guide.md §4.1).
         return Verdict(
             is_trail=bool(obj["is_trail"]),
             confidence=obj.get("confidence"),
