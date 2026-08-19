@@ -26,7 +26,7 @@ def main() -> int:
     ap.add_argument("--fails", type=int, default=20, help="오판 목록 최대 개수")
     a = ap.parse_args()
 
-    header, probes = {}, []
+    header, probes, n_sample_err = {}, [], 0
     for line in Path(a.runlog).read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
@@ -35,6 +35,8 @@ def main() -> int:
             header = d
         elif d.get("type") == "probe" and "label" in d:
             probes.append(d)
+        elif d.get("type") == "event" and d.get("kind") == "sample_error":
+            n_sample_err += 1
     if not probes:
         print("label 필드가 있는 probe 줄이 없다 — run_eval.py 출력이 맞나?",
               file=sys.stderr)
@@ -64,6 +66,12 @@ def main() -> int:
         print(f"prompt: {header['prompt'].get('system_version')} · "
               f"labels: {header.get('n_labels')}건")
     print(f"\nn={n}  accuracy={acc:.3f}  precision={prec:.3f}  recall={rec:.3f}")
+    expected = header.get("n_labels")
+    if n_sample_err or (expected and n < expected):
+        # 실패 샘플은 n 에서 조용히 빠진다 — 부분 실패가 정상 완료처럼 보이면
+        # 안 된다 (리뷰 지적)
+        print(f"  ⚠ 평가되지 않은 샘플이 있다: sample_error {n_sample_err}건"
+              + (f", 라벨 {expected}건 중 probe {n}건" if expected else ""))
     print("\n           pred T   pred F")
     print(f"  true  T  {tp:>6}   {fn:>6}")
     print(f"  true  F  {fp:>6}   {tn:>6}")

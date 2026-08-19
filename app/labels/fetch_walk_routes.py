@@ -28,7 +28,9 @@
 ### 예의와 재실행
 
 요청은 경유지 쌍당 1회 + 3초 대기. 응답 원본은 routes/ 에 캐시되어
-재실행 시 네트워크에 나가지 않는다 (강제 재수집은 캐시 파일 삭제).
+재실행 시 **walkset 요청은** 나가지 않는다 (강제 재수집은 캐시 파일 삭제).
+단, 좌표 역변환 검증(transcoord 3회)은 캐시 히트와 무관하게 매 실행 나간다 —
+완전 오프라인 실행은 아니다.
 """
 import hashlib
 import json
@@ -168,7 +170,48 @@ def wgs_to_wc(key: str, lat: float, lng: float) -> tuple[float, float]:
     return float(doc["x"]), float(doc["y"])
 
 
+def cache_name(cid: str, a: dict, b: dict) -> str:
+    """구간의 캐시 파일명. 좌표 해시라 경유지 병합/skip 에도 안정적이다."""
+    sig = hashlib.sha1(
+        f"{a['lat']:.6f},{a['lng']:.6f}-{b['lat']:.6f},{b['lng']:.6f}"
+        .encode()).hexdigest()[:10]
+    return f"{cid}_{sig}.json"
+
+
+def effective_waypoints(course: dict, verbose: bool = False) -> list[dict]:
+    """실제 라우팅에 쓰이는 경유지 열: missing 제외 + 50m 이내 연속 병합.
+
+    main() 과 print_keys() 가 반드시 같은 열을 봐야 한다 — 갈라지면 --keys 가
+    병합 구간에서 존재하지 않는 파일명을 알려주고, 그 이름으로 만든 수동
+    트레이스는 조용히 무시된다 (리뷰 지적, jongno-05 서시정≈시인의언덕 실측).
+    """
+    wps = [w for w in course["waypoints"] if w["status"] != "missing"]
+    merged = [wps[0]] if wps else []
+    for w in wps[1:]:
+        gap = haversine_m((merged[-1]["lat"], merged[-1]["lng"]),
+                          (w["lat"], w["lng"]))
+        if gap < MERGE_M:
+            if verbose:
+                print(f"  {course['course_id']}: {merged[-1]['name']} ≈ "
+                      f"{w['name']} ({gap:.0f}m) — 병합")
+            continue
+        merged.append(w)
+    return merged
+
+
+def print_keys() -> int:
+    """수동 트레이스를 넣을 때 필요한 캐시 파일명 목록 (→ 24-course-routes.md §5)."""
+    data = json.loads(WAYPOINTS.read_text(encoding="utf-8"))
+    for course in data["courses"]:
+        cid = course["course_id"]
+        for a, b in pairwise(effective_waypoints(course)):
+            print(f"{cid}  {a['name']} → {b['name']}: routes/{cache_name(cid, a, b)}")
+    return 0
+
+
 def main() -> int:
+    if "--keys" in sys.argv[1:]:
+        return print_keys()
     key = kakao_rest_key()
     data = json.loads(WAYPOINTS.read_text(encoding="utf-8"))
     official = {c["course_id"]: c.get("distance_km")
@@ -178,24 +221,12 @@ def main() -> int:
     out_courses, n_missing, verified = [], 0, False
     for course in data["courses"]:
         cid = course["course_id"]
-        wps = [w for w in course["waypoints"] if w["status"] != "missing"]
-        merged = [wps[0]] if wps else []
-        for w in wps[1:]:
-            gap = haversine_m((merged[-1]["lat"], merged[-1]["lng"]),
-                              (w["lat"], w["lng"]))
-            if gap < MERGE_M:
-                print(f"  {cid}: {merged[-1]['name']} ≈ {w['name']} ({gap:.0f}m) — 병합")
-                continue
-            merged.append(w)
-        wps = merged
+        wps = effective_waypoints(course, verbose=True)
         segments = []
         for a, b in pairwise(wps):
             # 캐시 키는 구간 인덱스가 아니라 좌표다 — 경유지 병합/skip 으로
             # 인덱스가 밀리면 캐시가 엉뚱한 구간에 붙는다.
-            sig = hashlib.sha1(
-                f"{a['lat']:.6f},{a['lng']:.6f}-{b['lat']:.6f},{b['lng']:.6f}"
-                .encode()).hexdigest()[:10]
-            cache = ROUTES_DIR / f"{cid}_{sig}.json"
+            cache = ROUTES_DIR / cache_name(cid, a, b)
             if cache.exists():
                 raw = json.loads(cache.read_text(encoding="utf-8"))
             else:
@@ -226,6 +257,14 @@ def main() -> int:
             poly = [wcongnamul_to_wgs84(x, y) for x, y in wc_pts]
             seg |= {"status": "ok", "length_m": length_m, "time_s": time_s,
                     "polyline": [[round(la, 7), round(ln, 7)] for la, ln in poly]}
+            # 길이 새너티는 파일에 남긴다 — stderr 경고만으로는 자동화 실행에서
+            # 증발한다 (리뷰 지적). 15% 는 walkset length 가 계단 가중치를
+            # 포함해 재계산과 어긋나는 정상 범위를 실측으로 감안한 값.
+            calc = polyline_length_m(poly)
+            if length_m > 0 and abs(calc - length_m) / length_m > 0.15:
+                seg |= {"length_recalc_m": round(calc), "warn_length": True}
+                print(f"  경고 {cid} {a['name']}→{b['name']}: 응답 length "
+                      f"{length_m}m vs 재계산 {calc:.0f}m", file=sys.stderr)
             segments.append(seg)
         total = sum(s.get("length_m", 0) for s in segments)
         ok = sum(1 for s in segments if s["status"] == "ok")
@@ -246,17 +285,6 @@ def main() -> int:
         "courses": out_courses,
     }, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"\nwrote {OUT}")
-
-    # 새너티: walkset 이 준 length 와 폴리라인 재계산 길이가 크게 어긋나면 경고
-    for c in out_courses:
-        for s in c["segments"]:
-            if s["status"] != "ok":
-                continue
-            calc = polyline_length_m([tuple(p) for p in s["polyline"]])
-            if s["length_m"] > 0 and abs(calc - s["length_m"]) / s["length_m"] > 0.15:
-                print(f"  경고 {c['course_id']} {s['from']}→{s['to']}: "
-                      f"응답 length {s['length_m']}m vs 재계산 {calc:.0f}m",
-                      file=sys.stderr)
     if n_missing:
         print(f"실패 구간 {n_missing}개 — courses_geom.json 의 status=missing. "
               f"수동 트레이스는 routes/ 에 source=manual 로 넣는다", file=sys.stderr)

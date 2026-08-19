@@ -124,6 +124,7 @@ class SamplingSettings:
     buffer_m: float
     offroute_max_m: float
     snap_radius_m: float
+    offroute_snap_radius_m: float
     neg_ratio: float
     grid_m: float
 
@@ -133,7 +134,6 @@ class EvalSettings:
     labels: str
     out: str | None
     resume: bool
-    save_first_n_failures: int
 
 
 @dataclass(frozen=True)

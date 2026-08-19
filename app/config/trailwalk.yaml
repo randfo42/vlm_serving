@@ -205,6 +205,10 @@ sampling:
   # 넓다 — 폴리라인이 길 중앙선이고 로드뷰 촬영차선이 몇 m 비껴 있기 때문.
   snap_radius_m: 30.0
 
+  # offroute 격자점의 스냅 반경(m). 격자(200m)가 성기므로 positive 보다
+  # 느슨하게 잡는다 — 어느 pano 든 버퍼 밖이기만 하면 negative 로 쓸 수 있다.
+  offroute_snap_radius_m: 60.0
+
   # negative : positive 최소 비율. docs/02-open-questions.md §2b "최소 1:1".
   neg_ratio: 1.0
 
@@ -221,7 +225,5 @@ eval:
 
   # out 파일이 이미 있으면 기록된 sample_id 를 건너뛰고 이어 쓴다.
   # 서버가 죽어도(Metal OOM) 재시작 후 같은 명령이 곧 재개다.
+  # 재개는 기존 파일의 prompt/labels 지문이 현재 설정과 같을 때만 허용된다.
   resume: true
-
-  # 오판 이미지 경로를 몇 개까지 리포트에 남길지 (report_eval.py 가 보여준다)
-  save_first_n_failures: 20

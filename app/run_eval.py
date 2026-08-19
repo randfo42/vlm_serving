@@ -45,6 +45,38 @@ def load_labels(path: Path) -> list[dict]:
     return [r for r in rows if r.get("type") == "sample" and r.get("final_label") is not None]
 
 
+def resume_header(out: Path) -> dict | None:
+    """기존 out 의 run_start 헤더. 없으면 None."""
+    if not out.exists():
+        return None
+    for line in out.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            d = json.loads(line)
+            return d if d.get("type") == "run_start" else None
+    return None
+
+
+def resume_conflict(old: dict | None, new: dict) -> str | None:
+    """재개가 안전하지 않으면 이유를 돌려준다.
+
+    다른 프롬프트나 다른 라벨 파일로 만든 probe 를 한 파일에 이어 붙이면
+    report_eval 이 하나의 정확도로 조용히 합산한다 (리뷰 지적). 지문이
+    다르면 재개가 아니라 다른 런이다 — 새 out 경로를 쓰게 한다.
+    """
+    if old is None:
+        return None
+    for what, get in (
+            ("prompt", lambda h: (h.get("prompt") or {}).get("system_sha256")),
+            ("labels", lambda h: h.get("labels_sha256"))):
+        a, b = get(old), get(new)
+        if a != b:
+            return (f"기존 out 의 {what} 지문이 현재 설정과 다르다\n"
+                    f"    기존: {a}\n    현재: {b}\n"
+                    f"  섞어 붙이면 report 가 하나의 정확도로 합산한다. "
+                    f"eval.out 에 새 경로를 줄 것.")
+    return None
+
+
 def done_ids(out: Path) -> set[str]:
     if not out.exists():
         return set()
@@ -82,7 +114,20 @@ def main() -> int:
     out = Path(st.eval.out) if st.eval.out else (
         APP / "runs" / f"{datetime.now(UTC):%Y%m%dT%H%M%SZ}-eval.jsonl")
 
-    skip = done_ids(out) if st.eval.resume else set()
+    header = {"kind": "eval", "schema": "eval", "url": st.vlm.url,
+              "labels_path": str(labels_path),
+              "labels_sha256": hashlib.sha256(labels_path.read_bytes()).hexdigest(),
+              "n_labels": len(samples),
+              "config_path": str(Path(a.config).resolve() if a.config
+                                 else settings.DEFAULT_PATH),
+              "prompt": P.fingerprint(st.vlm.prompt_version)}
+    skip = set()
+    if st.eval.resume:
+        conflict = resume_conflict(resume_header(out), header)
+        if conflict:
+            print(f"✗ 재개 불가: {conflict}", file=sys.stderr)
+            return 2
+        skip = done_ids(out)
     todo = [s for s in samples if s["sample_id"] not in skip]
     if not todo:
         print(f"전부 완료돼 있다 ({len(samples)}건). 리포트: "
@@ -94,13 +139,6 @@ def main() -> int:
     # app/docs/23-open-questions.md §5) — eval 정확도를 walk 정확도로 읽어도 된다.
     client = VlmClient(url=st.vlm.url, schema_name="eval",
                        system_version=st.vlm.prompt_version, settings=st)
-    header = {"kind": "eval", "schema": "eval", "url": st.vlm.url,
-              "labels_path": str(labels_path),
-              "labels_sha256": hashlib.sha256(labels_path.read_bytes()).hexdigest(),
-              "n_labels": len(samples),
-              "config_path": str(Path(a.config).resolve() if a.config
-                                 else settings.DEFAULT_PATH),
-              "prompt": P.fingerprint(st.vlm.prompt_version)}
 
     print(f"라벨 {len(samples)} (건너뜀 {len(skip)}) → {out}")
     n_err = 0

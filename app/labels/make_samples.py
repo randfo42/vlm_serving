@@ -234,8 +234,12 @@ def main() -> int:
             if got >= need_off:
                 break
             try:
-                pano = provider.nearest(lat, lng, radius_m=60.0)
-            except Exception:
+                pano = provider.nearest(lat, lng, radius_m=cfg.offroute_snap_radius_m)
+            except Exception as e:
+                # positive 루프와 같은 취급 — 조용히 삼키면 계통적 장애
+                # (레이트리밋 등)가 개수 감소로만 보인다 (리뷰 지적)
+                stats["no_pano"] += 1
+                log_err(f"offroute nearest({lat:.5f},{lng:.5f}): {e}")
                 continue
             if pano is None or pano.pano_id in seen_panos:
                 continue
@@ -243,13 +247,20 @@ def main() -> int:
                     for poly in all_polys)
             if not (cfg.buffer_m < d <= cfg.offroute_max_m):
                 continue                    # 스냅으로 버퍼 안에 끌려들어왔다
-            nbrs = provider.neighbors(pano)
-            if not nbrs:
-                stats["no_neighbor"] += 1
-                continue                    # 방위를 지어내지 않는다 — 버린다
-            seen_panos[pano.pano_id] = "offroute"
-            save(f"off-{got:03d}x", "offroute", False, "offroute", pano,
-                 nbrs[0].heading, d)
+            try:
+                nbrs = provider.neighbors(pano)
+                if not nbrs:
+                    stats["no_neighbor"] += 1
+                    continue                # 방위를 지어내지 않는다 — 버린다
+                seen_panos[pano.pano_id] = "offroute"
+                save(f"off-{got:03d}x", "offroute", False, "offroute", pano,
+                     nbrs[0].heading, d)
+            except Exception as e:
+                # 캡처 1건 실패로 try 전체가 빠져나가면 이미 찍은 수백 장이
+                # jsonl 기록 없이 유실된다 (리뷰 지적 — positive 루프와 동일 보호)
+                stats["capture_fail"] = stats.get("capture_fail", 0) + 1
+                log_err(f"offroute capture {pano.pano_id}: {e}")
+                continue
             got += 1
             print(f"\roffroute {got}/{need_off}  경과 {time.time() - t0:.0f}s",
                   end="", flush=True)
@@ -262,7 +273,8 @@ def main() -> int:
            "geom_sha256": hashlib.sha256(GEOM.read_bytes()).hexdigest(),
            "sampling": {k: getattr(cfg, k) for k in
                         ("interval_m", "buffer_m", "offroute_max_m",
-                         "snap_radius_m", "neg_ratio", "grid_m")},
+                         "snap_radius_m", "offroute_snap_radius_m",
+                         "neg_ratio", "grid_m")},
            "include_suspect": a.include_suspect, "skipped_courses": skipped}
     with SAMPLES.open("w", encoding="utf-8") as f:
         f.write(json.dumps(hdr, ensure_ascii=False) + "\n")

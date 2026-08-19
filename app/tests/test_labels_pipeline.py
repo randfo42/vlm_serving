@@ -146,3 +146,16 @@ def test_parse_walkset_empty_polyline_raises():
                                         {"guideMent": "도착", "x": 1, "y": 2}]}]}]}
     with pytest.raises(ValueError):
         routes.parse_walkset(ok_but_empty)
+
+
+def test_effective_waypoints_merges_close_nodes():
+    # --keys 와 main() 이 같은 경유지 열을 봐야 한다 — 갈라지면 --keys 가
+    # 병합 구간에서 존재하지 않는 캐시 파일명을 알려준다 (리뷰 지적)
+    course = {"course_id": "c", "waypoints": [
+        {"name": "A", "status": "geocoded", "lat": 37.5700, "lng": 127.0000},
+        {"name": "B", "status": "geocoded", "lat": 37.5701, "lng": 127.0000},  # ~11m
+        {"name": "C", "status": "missing"},
+        {"name": "D", "status": "geocoded", "lat": 37.5720, "lng": 127.0000},
+    ]}
+    wps = routes.effective_waypoints(course)
+    assert [w["name"] for w in wps] == ["A", "D"]

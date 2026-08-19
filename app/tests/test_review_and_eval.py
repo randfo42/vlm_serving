@@ -180,3 +180,23 @@ def test_load_labels_excludes_discarded(tmp_path):
         json.dumps({"type": "sample", "sample_id": "c", "final_label": False}),
     ]) + "\n")
     assert [s["sample_id"] for s in mod.load_labels(p)] == ["a", "c"]
+
+
+def test_resume_conflict_detects_prompt_and_labels_change():
+    mod = _load_run_eval()
+    old = {"prompt": {"system_sha256": "aaa"}, "labels_sha256": "L1"}
+    same = {"prompt": {"system_sha256": "aaa"}, "labels_sha256": "L1"}
+    other_prompt = {"prompt": {"system_sha256": "bbb"}, "labels_sha256": "L1"}
+    other_labels = {"prompt": {"system_sha256": "aaa"}, "labels_sha256": "L2"}
+    assert mod.resume_conflict(old, same) is None
+    assert mod.resume_conflict(None, same) is None          # 새 파일 — 재개 아님
+    assert "prompt" in mod.resume_conflict(old, other_prompt)
+    assert "labels" in mod.resume_conflict(old, other_labels)
+
+
+def test_resume_header_reads_first_line(tmp_path):
+    mod = _load_run_eval()
+    out = tmp_path / "e.jsonl"
+    out.write_text(json.dumps({"type": "run_start", "labels_sha256": "X"}) + "\n")
+    assert mod.resume_header(out)["labels_sha256"] == "X"
+    assert mod.resume_header(tmp_path / "none.jsonl") is None
