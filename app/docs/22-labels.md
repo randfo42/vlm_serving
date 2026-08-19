@@ -302,7 +302,8 @@ eval/report_eval.py           정확도·혼동행렬·소스별 슬라이스·R
 (`<데이터셋>/coverage.json`). 두 수를 **따로** 낸다 — 합치면 거짓말이 된다:
 
 - `pano_hit` — `nearest()` 가 반경 안에서 pano 를 준 비율
-- `on_route` — 그 pano 가 **폴리라인에서 45m 이내**인 비율 ← 진짜 커버리지
+- `on_route` — 그 pano 가 **폴리라인 근처**(`sampling.snap_radius_m` × 1.5)인
+  비율 ← 진짜 커버리지
 
 숲길 옆 차도의 pano 가 30m 안에 있으면 `pano_hit` 은 잡히지만 그건 산책로가
 아니다. 캡처 단계의 `off_polyline` 판정을 미리 당겨 하는 것과 같다.

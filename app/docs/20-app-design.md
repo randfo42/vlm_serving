@@ -268,15 +268,19 @@ decode 는 ~37 ms/token 이고 출력 토큰 수에만 비례한다. 그래서 �
 
 | 신호 | 뜻 | 코드 |
 |---|---|---|
-| `prompt_tokens < 200` | **이미지가 통째로 무시됐다** (WEBP 사고) | `vlm._parse` → `ImageIgnoredError` |
+| `prompt_tokens` 가 임계 미만 | **이미지가 통째로 무시됐다** (WEBP 사고) | `vlm._parse` → `ImageIgnoredError` |
 | 같은 지점인데 런마다 판정이 다름 | **덜 그려진 프레임을 찍었다** (아래) | `kakao.capture` 프레임 안정화 |
 | `cached_tokens == 0` (첫 호출 제외) | system turn 에 가변값이 섞였다 | `Stats.cache_misses` → 요약에 경고 |
 | `finish_reason != "stop"` | 출력이 잘렸다. thinking 모드 의심 | `vlm._parse` → `VlmError` |
-| 500 연속 3회 | Metal OOM 좀비. **자체 복구 안 됨** | `ServerDeadError` — 재시도 중단 |
+| 500 이 `vlm.fatal_500_streak` 회 연속 | Metal OOM 좀비. **자체 복구 안 됨** | `ServerDeadError` — 재시도 중단 |
 
 `prompt_tokens` 검사가 **JSON 파싱보다 먼저** 온다. 이미지가 무시되면 모델은
 그럴듯한 JSON 을 만들어낸다. 파싱은 성공하고 값은 순전한 환각이다.
 `prompt_tokens` 만이 이걸 잡는다.
+
+임계값은 따로 적어 두지 않고 `image.expected_image_tokens` 에서 파생시킨다
+(`settings.min_prompt_tokens`). 이미지 크기를 바꾸면 임계도 따라 움직여야
+하는데, 숫자를 두 곳에 적으면 한쪽만 바뀌고 검사가 조용히 헐거워진다.
 
 **`imaging.py` 를 우회해 data URI 를 만들지 말 것.** 그게 유일한 출구이고,
 포맷·종횡비 규칙이 거기 한 군데에만 있어야 조용히 깨지지 않는다.
@@ -307,7 +311,7 @@ pano 를 바꾼 직후 첫 스크린샷이 타일이 덜 붙은 프레임인 경
 
 | 통과한 조건 | 왜 뚫렸나 | 대응 |
 |---|---|---|
-| 연속 2프레임 일치 | 타일이 저해상도→고해상도로 덮어쓰는 **중간에 잠깐 멎는다**. 거기서 두 프레임이 일치해버린다 | 타일 요청이 끊길 때까지 먼저 기다리고(`_await_tiles`), 그다음 연속 **3**프레임 |
+| 연속 2프레임 일치 | 타일이 저해상도→고해상도로 덮어쓰는 **중간에 잠깐 멎는다**. 거기서 두 프레임이 일치해버린다 | 타일 요청이 끊길 때까지 먼저 기다리고(`_await_tiles`), 그다음 `render_settle_stable` 프레임 연속 일치 |
 | 위 조건 + 요청 끊김 | 세션의 **첫 캡처**만 여전히 달랐다 (3.0s vs 1.15s — 브라우저·SwiftShader·HTTP 캐시가 전부 차 있다) | 첫 캡처는 찍고 **버린다** (~1.2s) |
 
 고친 뒤 같은 pano 6회가 전부 동일 바이트, 같은 시작점의 walk 두 번이 probe
