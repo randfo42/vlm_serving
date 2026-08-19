@@ -30,37 +30,14 @@
 
 ## 2. 파일
 
-```
-app/
-  run_walk.py              # CLI 진입점 — 한 길을 따라간다 (인자는 --config 뿐)
-  run_explore.py           # CLI 진입점 — 갈래를 전부 간다 (§3.5)
-  config/
-    trailwalk.yaml         # ★ 기본값의 유일한 정본. 값마다 근거 주석
-  requirements.txt
-  .env                     # 비밀값. gitignore + 훅으로 읽기 차단 (§9)
-  .env.example             # 형식만. 커밋됨
-  prompts/
-    system_v3.txt          # ★ 판정 기준의 유일한 진실. 바이트 고정 (v1·v2 도 보존)
-  trailwalk/
-    config.py              # .env → os.environ. 값을 절대 출력하지 않는다
-    settings.py            # config/trailwalk.yaml → dataclass. 모르는 키는 터뜨린다
-    prompt.py              # 프롬프트 로드 + 해시 핀 + 출력 스키마
-    imaging.py             # ★ 서버로 나가는 모든 바이트가 지나는 단일 출구
-    vlm.py                 # 1턴 호출 + 조용한 실패 감지 + 서킷브레이커
-    geo.py                 # 측지 계산 (좌표를 직접 미는 데 필요)
-    walk.py                # 탐색 루프 — 경로 추적
-    explore.py             # 탐색 루프 — 분기 탐색 (BFS)
-    runlog.py              # JSONL
-    providers/
-      base.py              # Pano + RoadviewProvider 프로토콜
-      fixture.py           # 오프라인. API 키 없이 전체 배선 확인
-      kakao.py             # Playwright + JS SDK. 이웃 그래프 + 프레임 안정화
-  labels/
-    fetch_gil_seoul.py     # gil.seoul.go.kr → trails.json
-    trails.json            # 150개 산책로 (수집 완료)
-  runs/                    # 런로그 (gitignore)
-  docs/
-```
+**정본은 `app/CLAUDE.md`** 다. 여기 트리를 다시 그리지 않는다 — 한때 그렇게
+했다가 파일이 12개 늘어나는 동안 아무도 안 고쳐서 실제 구조와 크게 어긋났다.
+
+이 문서가 계속 가리키는 것 셋만 적어 둔다:
+
+- `app/config/trailwalk.yaml` — ★ 기본값의 유일한 정본. 값마다 근거 주석
+- `app/prompts/system_v3.txt` — ★ 판정 기준의 유일한 진실. 바이트 고정
+- `app/trailwalk/imaging.py` — ★ 서버로 나가는 모든 바이트가 지나는 단일 출구
 
 ---
 
