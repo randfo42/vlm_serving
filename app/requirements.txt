@@ -5,6 +5,12 @@
 
 pillow>=11            # 이미지 디코드/리사이즈/JPEG 인코드 — imaging.py 필수
 
+# 설정 파일(app/config/trailwalk.yaml) 파싱 — settings.py 필수.
+# .env 로더(config.py)가 python-dotenv 를 안 쓰는 것과 대조적으로 여기는
+# 남의 라이브러리를 쓴다: YAML 은 "KEY=VALUE 한 줄" 과 달리 직접 짤 만한
+# 형식이 아니고, 잘못 짠 파서는 설정을 조용히 틀리게 읽는다.
+pyyaml>=6
+
 # kakao provider 전용. Kakao 로드뷰에 서버사이드 REST 가 없어서 브라우저를 몬다.
 # → app/docs/21-roadview-providers.md
 playwright>=1.48
