@@ -8,7 +8,7 @@ VLM 도 브라우저도 없이 돈다. 검증하는 것은 판정 **품질**이 
 - 시작점에서는 모든 방향을 본다 (진행 방위가 갈래를 지우지 않는다)
 - 갈림길에서 갈래를 버리지 않고 전부 간다
 - pano 하나에 판정 하나 — 두 경로로 접근해도 다시 묻지 않는다
-- 예산(depth/호출)에 걸린 갈래는 사라지지 않고 frontier 에 남는다
+- 예산(거리/시간)에 걸린 갈래는 사라지지 않고 frontier 에 남는다
 - **이동을 지어내지 않는다.** 이웃 목록을 못 얻은 것과 길이 끝난 것은 다른 사실이다
 """
 import math
@@ -66,7 +66,7 @@ def test_시작점의_이웃을_못_얻으면_아무것도_묻지_않는다():
     """전방향을 흉내내는 start_offsets 가 여기 있었다. 지웠다 — 방위를 지어내면
     없는 길을 물어보게 된다. 시작점의 갈래도 이웃이 알려주는 것이어야 한다."""
     p = Provider({})
-    res = run(p, {}, max_vlm_calls=4)
+    res = run(p, {})
     assert p.probes == []
     assert [f["reason"] for f in res.frontier] == ["neighbors_missing"]
 
@@ -184,25 +184,6 @@ def test_그래프_막다른_길은_폴백으로_새지_않는다():
 
 # ── 예산 ───────────────────────────────────────────────────────────────────
 
-def test_max_depth에_걸린_노드는_frontier에_남는다():
-    p = Provider({"S": [nb("A", 90.0)], "A": [nb("B", 90.0)], "B": [nb("C", 90.0)]})
-    res = run(p, {("S", 90.0): True, ("A", 90.0): True, ("B", 90.0): True},
-              max_depth=2)
-    assert ("B", 90.0) not in p.probes, "depth 한계 너머를 물었다"
-    assert [f["pano_id"] for f in res.frontier] == ["B"]
-    assert res.frontier[0]["reason"] == "max_depth"
-
-
-def test_call_budget에서_멈추고_나머지를_frontier에_남긴다():
-    p = Provider({"S": [nb("A", 90.0), nb("B", 180.0), nb("C", 270.0)]})
-    res = run(p, {("S", 90.0): True, ("S", 180.0): True, ("S", 270.0): True},
-              max_vlm_calls=2)
-    assert res.calls == 2
-    assert res.stop_reason == "call_budget"
-    # 못 물은 C + 큐에 남은 A, B 가 전부 frontier 다
-    assert {f["pano_id"] for f in res.frontier} == {"A", "B", "C"}
-
-
 def test_예산_안에서_끝나면_frontier가_비어_있다():
     p = Provider({"S": [nb("A", 90.0)], "A": [nb("S", 270.0)]})
     res = run(p, {("S", 90.0): True})
@@ -226,14 +207,6 @@ def test_아님_판정도_확장해서_건너편_산책로를_찾는다():
     assert by_id["S"]["is_trail"] is None        # 시작 노드는 판정 전
 
 
-def test_expand_non_trail을_끄면_예전처럼_갈래가_죽는다():
-    p = Provider({"S": [nb("A", 90.0)],
-                  "A": [nb("S", 270.0), nb("B", 180.0)], "B": [nb("A", 0.0)]})
-    res = run(p, {("A", 180.0): True}, expand_non_trail=False)
-    assert [n["pano_id"] for n in res.nodes] == ["S"]
-    assert ("A", 180.0) not in p.probes
-
-
 def test_큐는_발견_순서대로_비운다():
     """판정은 소비 순서를 바꾸지 않는다. 한때 산책로 갈래 큐를 먼저 비웠는데,
     그러면 소비 순서가 depth 를 따르지 않아 너비 우선이 깨진다 — "아님" 갈래의
@@ -242,7 +215,7 @@ def test_큐는_발견_순서대로_비운다():
                   "X": [nb("S", 180.0), nb("X2", 0.0)],
                   "A": [nb("S", 270.0), nb("A2", 90.0)],
                   "X2": [nb("X", 180.0)], "A2": [nb("A", 270.0)]})
-    run(p, {("S", 90.0): True}, max_vlm_calls=3)
+    run(p, {("S", 90.0): True})
     # S 에서 X(아님)·A(산책로)를 물었으면, 세 번째 호출은 먼저 발견된 X 쪽이다
     assert p.probes[2][0] == "X"
 
@@ -284,7 +257,7 @@ def test_두_갈래가_같은_pano로_모이면_한_번만_간다():
                   "R": [nb("MERGED", 45.0)],
                   "MERGED": []})
     res = run(p, {("S", 0.0): True, ("S", 90.0): True,
-                  ("L", 45.0): True, ("R", 45.0): True}, max_depth=3)
+                  ("L", 45.0): True, ("R", 45.0): True})
     assert sum(1 for n in res.nodes if n["pano_id"] == "MERGED") == 1
 
 

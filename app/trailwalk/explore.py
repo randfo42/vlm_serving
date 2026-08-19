@@ -9,13 +9,16 @@ frontier 에 기록만 했다. 그 "나머지" 를 실제로 가는 것이 여�
 
 VLM 에게 묻는 것은 하나다: "이 장면이 산책로인가".
 
-### 예산은 depth 가 아니라 호출 수로 건다
+### 예산 축은 둘뿐이다: 시간과 거리
 
-같은 depth 라도 갈림길 수에 따라 호출 수가 크게 달라진다. 지갑에서 나가는
-것은 depth 가 아니라 VLM 호출(~2.2s/건)이므로 실질 상한은 `max_vlm_calls` 다.
-`max_depth` 는 "시작점에서 몇 걸음 반경까지 볼 것인가" 라는 의미적 한계로
-따로 둔다. 어느 쪽이든 예산에 걸려 못 간 갈래는 버리지 않고 frontier 에
-남긴다 — 이어서 탐색할 때 그게 그대로 입력이다.
+`max_distance_m` 이 시작점에서의 직선 반경을, `max_seconds` 가 벽시계를
+자른다. 한때 호출 수와 걸음 수(depth)도 예산이었는데, 넷을 두면 어느 것이
+실제로 끊었는지가 런마다 달라져 "여기까지가 지도인가 예산인가" 를 매번
+되짚어야 했다. 사용자가 정하는 것은 반경이고, 시간은 그 안전망이다.
+
+예산에 걸려 못 간 갈래는 버리지 않고 frontier 에 남긴다 — 이어서 탐색할 때
+그게 그대로 입력이다. depth 는 예산 축에서 빠졌지만 출력에는 남는다
+(노드가 시작점에서 몇 홉인지는 그리는 쪽이 쓴다).
 
 ### pano 하나에 판정 하나
 
@@ -25,14 +28,17 @@ VLM 에게 묻는 것은 하나다: "이 장면이 산책로인가".
 쓰는데, 갈림길 반대편에서 어차피 다른 pano 들로 이어지므로 얻는 것이
 적다. visited 에는 "큐에 들어간 것" 과 "아니라고 판정된 것" 이 함께 든다.
 
-### "아님" 판정도 확장한다 (2026-08-18 결정)
+### "아님" 판정도 확장한다 (2026-08-18 결정, 2026-08-20 고정)
 
 처음엔 산책로로 판정된 갈래만 확장했는데, 그러면 차도 pano 에서 시작하는
 순간 모든 방향이 "아님" 이라 탐색이 2호출 만에 죽는다 — 실측으로 확인됐고,
-웹 UI 유저는 길가를 찍기 마련이다. 그래서 판정과 무관하게 depth 한계
-안에서는 계속 간다. 차도를 다리 삼아 건너면 하천 램프가 나온다.
+웹 UI 유저는 길가를 찍기 마련이다. 그래서 판정과 무관하게 반경 안에서는
+계속 간다. 차도를 다리 삼아 건너면 하천 램프가 나온다.
 
-폭주는 예산이 막는다: max_depth 가 반경을, max_vlm_calls 가 총량을 자른다.
+끄는 손잡이(`expand_non_trail`)를 뒀다가 지웠다. "반경 안을 전부 본다" 가
+정책인 이상 끄면 그 정책이 깨지고, 끈 런과 안 끈 런의 결과를 비교할 수 없다.
+
+폭주는 반경(max_distance_m)이 막는다. 차도로 새더라도 반경 밖으로는 못 간다.
 
 ### 큐는 하나다
 
@@ -44,7 +50,7 @@ depth 를 따르지 않아 **"너비 우선" 이 더는 사실이 아니게 된�
 입력으로서 의미가 흐려진다.
 
 지금은 발견 순서 그대로 FIFO 로 소비한다. 판정은 큐의 순서를 바꾸지
-않는다. 차도로 새는 것은 max_depth(반경)와 max_vlm_calls(총량)가 막는다.
+않는다. 차도로 새는 것은 반경이 막는다.
 """
 from __future__ import annotations
 
@@ -64,11 +70,8 @@ class ExploreConfig:
 
     기본값을 코드에 다시 적으면 정본이 둘이 된다 (→ 루트 CLAUDE.md "설정").
     """
-    max_vlm_calls: int
-    max_depth: int
     max_seconds: float
     max_distance_m: float
-    expand_non_trail: bool
     max_candidates: int
     snap_radius_m: float
 
@@ -79,11 +82,8 @@ class ExploreConfig:
     @classmethod
     def from_settings(cls, s) -> ExploreConfig:
         return cls(
-            max_vlm_calls=s.budget.max_vlm_calls,
-            max_depth=s.budget.explore_max_depth,
             max_seconds=s.budget.max_seconds,
             max_distance_m=s.budget.max_distance_m,
-            expand_non_trail=s.candidates.expand_non_trail,
             max_candidates=s.candidates.max_candidates,
             snap_radius_m=s.geo.snap_radius_m,
             image=s.image,
@@ -96,7 +96,7 @@ class ExploreResult:
     nodes: list[dict] = field(default_factory=list)    # pano_id, lat, lng, depth, parent
     # 판정 하나하나 = 그래프의 간선. UI 마킹의 원천 데이터다
     probes: list[dict] = field(default_factory=list)   # from_pano, heading, to_pano, is_trail
-    # 예산(depth/호출/시간)에 걸려 못 간 갈래. 이어서 탐색할 때의 입력
+    # 예산(거리/시간)이나 이웃 로드 실패로 못 간 갈래. 이어서 탐색할 때의 입력
     frontier: list[dict] = field(default_factory=list)  # from_pano, pano_id, 좌표, depth, reason
     stop_reason: str = ""          # exhausted = 갈 곳을 다 갔다. 나머지는 예산/오류
     calls: int = 0
@@ -237,13 +237,8 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
                           "lng": node.pano.lng, "depth": node.depth,
                           "parent": node.came_from, "is_trail": node.is_trail})
 
-        if node.depth >= cfg.max_depth:
-            # 마킹은 하되 확장하지 않는다. 저 너머는 안 본 것이지 없는 것이 아니다
-            res.frontier.append(leftover(node, "max_depth"))
-            continue
-
         if geo.haversine_m(origin, (node.pano.lat, node.pano.lng)) > cfg.max_distance_m:
-            # depth 와 같은 처리다 — 반경 밖은 안 본 것이지 없는 것이 아니다
+            # 마킹은 하되 확장하지 않는다. 반경 밖은 안 본 것이지 없는 것이 아니다
             res.frontier.append(leftover(node, "distance_budget"))
             continue
 
@@ -261,12 +256,11 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
 
         budget_hit = False
         for i, (hdg, nb) in enumerate(cands):
-            # 예산은 노드 경계가 아니라 **후보마다** 본다. 한 노드의 후보가
+            # 시간은 노드 경계가 아니라 **후보마다** 본다. 한 노드의 후보가
             # 최대 max_candidates 개라, 노드 경계에서만 보면 캡처가 느릴 때
             # 그 노드 하나가 통째로 예산을 넘겨 실행된다.
-            if res.calls >= cfg.max_vlm_calls or time.time() - t0 > cfg.max_seconds:
-                res.stop_reason = ("call_budget" if res.calls >= cfg.max_vlm_calls
-                                   else "time_budget")
+            if time.time() - t0 > cfg.max_seconds:
+                res.stop_reason = "time_budget"
                 # 못 물은 후보들도 frontier 다 — 판정을 안 받았을 뿐 갈래는 갈래다
                 for _h2, n2 in cands[i:]:
                     res.frontier.append({
@@ -300,8 +294,6 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
                                "is_trail": ok, "depth": node.depth})
             # 첫 접근의 판정이 그 pano 의 판정이다 — 참이든 거짓이든 다시 묻지 않는다
             visited.add(nb.pano_id)
-            if not ok and not cfg.expand_non_trail:
-                continue
 
             child = _Node(depth=node.depth + 1, bearing=hdg,
                           came_from=node.pano.pano_id, is_trail=ok,

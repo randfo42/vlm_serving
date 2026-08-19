@@ -71,7 +71,7 @@ def main() -> int:
               "prompt": P.fingerprint(st.vlm.prompt_version)}
 
     print(f"provider={prov.name}  prompt={st.vlm.prompt_version}  schema={st.vlm.schema}  "
-          f"start=({lat},{lng})  예산 {cfg.max_vlm_calls}호출 · depth {cfg.max_depth}\n"
+          f"start=({lat},{lng})  반경 {cfg.max_distance_m:.0f}m · 최대 {cfg.max_seconds:.0f}s\n"
           f"로그: {out}\n")
     res = None
     try:

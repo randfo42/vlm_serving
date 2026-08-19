@@ -25,7 +25,7 @@ def test_정본_파일이_실제로_읽힌다():
     assert settings.DEFAULT_PATH.exists()
     s = settings.load()
     assert s.run.provider in ("fixture", "kakao")
-    assert s.budget.max_vlm_calls > 0
+    assert s.budget.max_distance_m > 0      # fixture 실런의 유일한 종료 보장
 
 
 def test_기본값을_코드에_다시_적지_않는다():
@@ -78,12 +78,12 @@ def test_적은_것만_덮어쓰고_나머지는_정본에서_온다(tmp_path):
     base = settings.load()
     p = write(tmp_path, """
         budget:
-          max_vlm_calls: 7
+          max_distance_m: 7.0
     """)
     s = settings.load(p)
-    assert s.budget.max_vlm_calls == 7
+    assert s.budget.max_distance_m == 7.0
     # 같은 구획의 다른 키도, 아예 안 적은 구획도 정본 값 그대로다
-    assert s.budget.explore_max_depth == base.budget.explore_max_depth
+    assert s.budget.max_seconds == base.budget.max_seconds
     assert s.run.provider == base.run.provider
 
 
@@ -96,7 +96,7 @@ def test_섹션을_통째로_갈아치우지_않는다(tmp_path):
     """)
     s = settings.load(p)
     assert s.budget.max_seconds == 30.0
-    assert s.budget.max_vlm_calls == base.budget.max_vlm_calls
+    assert s.budget.max_distance_m == base.budget.max_distance_m
 
 
 def test_코드에는_기본값이_없다():
@@ -173,8 +173,8 @@ def test_따옴표_친_no는_bool이_아니라_문자열이다(tmp_path):
 def test_bool_자리에_숫자를_넣으면_터진다(tmp_path):
     """파이썬에서 bool 은 int 의 하위형이라 검사 순서가 뒤집히면 1이 통과한다."""
     p = write(tmp_path, """
-        candidates:
-          expand_non_trail: 1
+        run:
+          warmup: 1
     """)
     with pytest.raises(settings.SettingsError):
         settings.load(p)

@@ -24,38 +24,44 @@ cd .. && ./configs/smoke.sh
 `fixture` provider 가 로컬 이미지를 로드뷰인 척 돌려준다.
 
 설정은 `app/config/trailwalk.yaml` 하나에 다 있다. **CLI 인자는 `--config`
-하나뿐이다** (→ 루트 `CLAUDE.md` "설정"). 기본 설정이 이미 fixture 라 그냥 돌리면 된다.
+하나뿐이다** (→ 루트 `CLAUDE.md` "설정"). 기본 provider 가 이미 fixture 다.
 
 ```bash
 pip install -r app/requirements.txt
-python app/run_explore.py
+
+# 배선만 확인할 때는 반경을 줄인다 — 기본 1000m 는 fixture 격자에서 30분짜리다
+cp app/config/trailwalk.yaml app/config/smoke.yaml   # budget.max_distance_m: 30.0
+python app/run_explore.py --config app/config/smoke.yaml
 ```
 
-값을 바꾸려면 설정을 복사해서 고친다:
+값을 바꾸려면 언제나 설정을 복사해서 고친다:
 
 ```bash
 cp app/config/trailwalk.yaml app/config/my.yaml   # start·예산·프롬프트를 고치고
 python app/run_explore.py --config app/config/my.yaml
 ```
 
-기대 출력:
+기대 출력 (반경 30m):
 
 ```
-멈춘 이유: call_budget
-노드 163 · 판정 200 (산책로 173) · VLM 호출 200 · 434s (2.15s/호출)
+멈춘 이유: exhausted
+노드 47 · 판정 46 (산책로 42) · VLM 호출 46 · 99s (2.14s/호출)
 
-예산에 걸려 못 간 갈래 39개:
-  d10 fx_37.569709_127.007428 → fx_37.569619_127.007388  [call_budget]
+예산에 걸려 못 간 갈래 18개:
+  d 3 fx_37.569889_127.006488 → fx_37.569978_127.006528  [distance_budget]
   ...
 ```
 
-⚠️ **기본 설정으로 7분 걸린다.** fixture 의 격자 그래프는 사방이 이어져 있어
-예산을 다 쓴다 (`budget.max_vlm_calls: 200` × 2.2s). 배선만 확인하려면 그 값을
-줄여서 돌린다.
+`exhausted` 는 **반경 안을 다 봤다**는 뜻이다. 반경 밖 갈래 18개는 버려지지
+않고 `frontier` 에 남는다 — 이어서 탐색할 때 그게 그대로 입력이다.
 
-노드보다 판정이 많은 것이 정상이다 — 갈림길마다 후보가 여러 개이고 후보
-하나하나가 별개 질문이다. 예산에 걸려 못 간 갈래는 버리지 않고 `frontier` 에
-남는다. 이어서 탐색할 때 그게 그대로 입력이다.
+노드는 큐에서 꺼낸 지점, 판정은 간선 하나하나다. 반경 안을 다 돌면
+노드 = 판정 + 1 이 된다 — 시작 노드만 판정 없이 들어가고, 이미 본 pano 는
+후보에서 미리 빠져 판정이 낭비되지 않는다.
+
+⚠️ **기본 반경 1000m 로 돌리면 30분 걸린다.** fixture 는 10m 격자 이웃을
+무한히 주므로 반경 안 노드가 3만 개 수준이고, `budget.max_seconds`(1800s)가
+먼저 걸린다. 실제 로드뷰는 길이 있는 곳에만 pano 가 있어 훨씬 적다.
 
 첫 호출이 13초쯤 걸리면 정상이다 (콜드 스타트). `run.warmup: true` 로 측정 밖으로 뺀다.
 

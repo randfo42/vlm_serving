@@ -57,16 +57,13 @@ class RunSettings:
 
 @dataclass(frozen=True)
 class BudgetSettings:
-    max_vlm_calls: int
     max_seconds: float
-    explore_max_depth: int
     max_distance_m: float
 
 
 @dataclass(frozen=True)
 class CandidateSettings:
     max_candidates: int
-    expand_non_trail: bool
 
 
 @dataclass(frozen=True)
@@ -192,7 +189,7 @@ def _coerce(v: Any, hint: Any, where: str, name: str):
 
     if hint is bool:
         # bool 을 먼저 본다. 파이썬에서 bool 은 int 의 하위형이라 순서가 뒤집히면
-        # `expand_non_trail: 1` 같은 것이 int 검사에 먼저 걸린다.
+        # `warmup: 1` 같은 것이 int 검사에 먼저 걸린다.
         if not isinstance(v, bool):
             raise bad("true 또는 false")
         return v
