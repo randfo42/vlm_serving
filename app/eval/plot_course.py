@@ -20,8 +20,7 @@ import urllib.request
 from pathlib import Path
 
 GOOD = "#0ca30c"      # 코스 폴리라인 / true 샘플
-CRIT = "#d03b3b"      # false 샘플 (offroute)
-WARN = "#b8860b"      # false 샘플 (같은 pano 이각: orth/rev)
+CRIT = "#d03b3b"      # false 샘플 (검수에서 뒤집힌 것)
 MUTE = "#78787a"
 INK = "#1a1a1a"
 
@@ -124,7 +123,7 @@ def render(course: dict, samples: list[dict], with_map: bool = True) -> str:
         if sm.get("label"):
             fill, r = GOOD, 3
         else:
-            fill, r = (CRIT, 3.5) if src == "offroute" else (WARN, 3)
+            fill, r = CRIT, 3.5
         s.append(f'<circle cx="{a:.1f}" cy="{b:.1f}" r="{r}" fill="{fill}" '
                  f'stroke="#ffffff" stroke-width="1">'
                  f'<title>{sm.get("sample_id", "?")} {src} h{sm.get("heading")}</title>'

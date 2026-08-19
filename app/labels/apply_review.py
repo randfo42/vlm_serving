@@ -7,8 +7,8 @@
 
 ### 검수 방법 (make_samples.py 가 만든 폴더에서)
 
-    images/<코스>/pos/      ← 자동 true
-    images/<코스>/neg/      ← 자동 false
+    images/<코스>/pos/      ← 자동 라벨(전부 true). make_samples 가 만든 그대로
+    images/<코스>/neg/      ← **비어 있다.** 차도 장면을 여기로 옮기는 것이 검수다
     images/<코스>/discard/  ← 못 쓸 이미지를 여기로 (가림·실내·렌더 깨짐)
 
 뷰어로 훑으며 **파일을 옮기는 것**이 검수의 전부다: 라벨이 틀렸으면

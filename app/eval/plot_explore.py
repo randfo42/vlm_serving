@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 """explore 결과 JSON → 지도 위 SVG 한 장. 웹 UI 전에 눈으로 확인하는 용도다.
 
-    python app/run_explore.py --provider kakao --start 37.5695,127.0050 \\
-        --max-calls 40 --dump /tmp/explore.json
+    # 설정에서 run.dump: /tmp/explore.json 을 켜고 돌린 뒤
+    python app/run_explore.py --config app/config/my.yaml
     python app/eval/plot_explore.py /tmp/explore.json -o /tmp/explore.svg
 
 의존성 없음(stdlib). 배경은 OSM 타일을 받아 SVG 에 base64 로 내장한다 —
@@ -169,7 +169,7 @@ def render(data: dict, with_map: bool = True) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("dump", help="run_explore.py --dump 이 만든 JSON")
+    ap.add_argument("dump", help="run.dump 로 run_explore.py 가 만든 JSON")
     ap.add_argument("-o", "--out", default=None, help="SVG 출력 경로 (기본: <dump>.svg)")
     ap.add_argument("--no-map", action="store_true",
                     help="OSM 타일 배경 없이 도형만 (오프라인)")

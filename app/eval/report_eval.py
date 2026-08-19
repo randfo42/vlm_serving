@@ -6,10 +6,11 @@
 내는 것: 정확도 · 혼동행렬 · label_source 별 슬라이스 · confidence 분포 ·
 임계값별 ROC 점 · 오판 이미지 목록 (검수용).
 
-label_source 슬라이스가 핵심 정보다: orth(코스 위 pano 의 직교 화각)는
-"가장 값싸고 가장 어려운 음성"(22-labels.md §5)이라 여기 정확도가
-offroute(그냥 딴 동네 도로)와 얼마나 벌어지는지가 판정 기준의 실질
-난이도를 말해준다. confidence 포화(23-open-questions §6)도 여기서 본다.
+label_source 슬라이스는 지금 한 종류(route)뿐이라 출력되지 않는다. 한때
+orth/rev/offroute 세 종류의 합성 음성이 있었고 그 대비가 핵심 정보였는데,
+전부 폐기했다 (→ 22-labels.md §5). 지금 세트는 **양성 전용**이라 나오는 것은
+재현율이고, precision·ROC 는 정의되지 않는다 — 리포트가 그렇게 경고한다.
+confidence 포화(23-open-questions §6)는 여기서 본다.
 """
 import argparse
 import json
