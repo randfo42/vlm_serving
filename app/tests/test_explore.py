@@ -15,7 +15,6 @@ test_walk.py 와 같은 원칙이다: VLM 도 브라우저도 없이, 판정 **�
 from test_walk import Client, Provider, nb
 
 from trailwalk.explore import ExploreConfig, explore
-from trailwalk.providers.base import Pano
 
 
 def run(provider, verdicts, bearing=0.0, **cfg):
@@ -33,12 +32,13 @@ def test_시작점에서_모든_이웃을_묻는다():
     assert set(p.probes) == {("S", 90.0), ("S", 270.0), ("S", 0.0)}
 
 
-def test_폴백_시작점은_전방향을_본다():
-    """그래프가 없으면 이웃 목록이 없다. start_offsets 로 전방향을 흉내낸다."""
+def test_시작점의_이웃을_못_얻으면_아무것도_묻지_않는다():
+    """전방향을 흉내내는 start_offsets 가 여기 있었다. 지웠다 — 방위를 지어내면
+    없는 길을 물어보게 된다. 시작점의 갈래도 이웃이 알려주는 것이어야 한다."""
     p = Provider({})
     res = run(p, {}, max_vlm_calls=4)
-    assert p.probes == [("S", 0.0), ("S", 90.0), ("S", 180.0), ("S", 270.0)]
-    assert res.used_graph is False
+    assert p.probes == []
+    assert [f["reason"] for f in res.frontier] == ["neighbors_missing"]
 
 
 def test_시작점에_로드뷰가_없으면_no_coverage():
@@ -163,16 +163,14 @@ def test_산책로_갈래_큐를_먼저_비운다():
 
 # ── 그래프 provider 의 이웃 로드 실패 ──────────────────────────────────────
 
-def test_그래프_provider는_이웃을_못얻어도_좌표밀기로_새지_않는다():
+def test_이웃을_못_얻은_갈래는_neighbors_missing으로_남긴다():
     """2026-08-18 청계천 실주행(차도 시작, 50호출)에서 노드 22개 중 12개가
-    이웃 로드에 실패해 호출 34/50 이 좌표 밀기로 샜다. 이웃이 실재하는
-    provider(uses_graph)에서 빈 목록은 "갈래 없음" 이 아니라 렌더/스니핑
-    실패다 — 추측 방위로 걷지 않고 neighbors_missing 으로 남긴다."""
+    이웃 로드에 실패해 호출 34/50 이 좌표 밀기로 샜다. 빈 목록은 "갈래 없음" 이
+    아니라 렌더/스니핑 실패다 — 추측 방위로 걷지 않고 frontier 에 남긴다."""
     # pano id 는 그 실주행에서 실제로 폴백에 빠졌던 것들이다
     p = Provider({"1212370258": [nb("1039598393", 33.0)],
                   "1039598393": []},                    # ← 이웃 로드 실패
                  start=("1212370258", 37.5695, 127.005))
-    p.uses_graph = True
     res = run(p, {("1212370258", 33.0): True})
     assert p.nearest_calls == 1, "좌표 밀기 스냅이 돌았다"
     assert all(pr["to_pano"] is not None for pr in res.probes), "추측 방위를 물었다"
@@ -180,44 +178,25 @@ def test_그래프_provider는_이웃을_못얻어도_좌표밀기로_새지_않
         [("1039598393", "neighbors_missing")]
 
 
-def test_uses_graph가_아니면_빈_이웃은_정상_폴백이다():
-    """fixture 처럼 그래프가 원래 없는 provider 는 좌표 밀기가 정상 경로다."""
-    p = Provider({})
-    res = run(p, {}, max_vlm_calls=4)
-    assert res.used_graph is False
-    assert all(pr["to_pano"] is None for pr in res.probes)
-    assert not any(f["reason"] == "neighbors_missing" for f in res.frontier)
-
-
-# ── 폴백 갈래 ──────────────────────────────────────────────────────────────
-
-def test_갈래의_no_coverage는_탐색_전체를_멈추지_않는다():
-    """walk 는 외길이라 no_coverage 가 곧 끝이다. explore 는 다른 갈래가 남아 있다."""
-    p = Provider({})
-    real_nearest = p.nearest
-
-    def nearest(lat, lng, r):
-        pano = real_nearest(lat, lng, r)
-        return pano if p.nearest_calls == 1 else None   # 시작만 성공, 갈래는 전부 미촬영
-
-    p.nearest = nearest
-    res = run(p, {("S", 0.0): True, ("S", 90.0): True})
+def test_이웃_실패_뒤에도_다른_갈래는_계속_간다():
+    """walk 는 외길이라 실패가 곧 끝이지만, explore 는 갈래가 남아 있다."""
+    p = Provider({"S": [nb("DEAD", 0.0), nb("LIVE", 90.0)],
+                  "DEAD": [],                                   # ← 이웃 로드 실패
+                  "LIVE": [nb("S", 270.0), nb("FAR", 90.0)],
+                  "FAR": [nb("LIVE", 270.0)]})
+    res = run(p, {("S", 0.0): True, ("S", 90.0): True, ("LIVE", 90.0): True})
     assert res.stop_reason == "exhausted"
-    assert [n["pano_id"] for n in res.nodes] == ["S"]
+    assert "FAR" in [n["pano_id"] for n in res.nodes], "한 갈래 실패로 탐색이 죽었다"
+    assert [(f["pano_id"], f["reason"]) for f in res.frontier] == \
+        [("DEAD", "neighbors_missing")]
 
 
-def test_폴백_갈래가_같은_pano로_스냅되면_한_번만_간다():
-    """격자 스냅 중복. 두 갈래가 같은 자리로 모이면 한 번만 확장한다."""
-    p = Provider({})
-    calls = {"n": 0}
-
-    def nearest(lat, lng, r):
-        # 첫 호출(시작)은 S, 이후 갈래 스냅은 전부 같은 pano 로 모은다
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return p.start
-        return Pano(pano_id="MERGED", lat=37.5001, lng=127.0)
-
-    p.nearest = nearest
-    res = run(p, {("S", 0.0): True, ("S", 90.0): True}, max_depth=1)
+def test_두_갈래가_같은_pano로_모이면_한_번만_간다():
+    """마름모꼴 골목. 같은 pano 를 두 노드에서 접근할 수 있다 — 한 번만 확장한다."""
+    p = Provider({"S": [nb("L", 0.0), nb("R", 90.0)],
+                  "L": [nb("MERGED", 45.0)],
+                  "R": [nb("MERGED", 45.0)],
+                  "MERGED": []})
+    res = run(p, {("S", 0.0): True, ("S", 90.0): True,
+                  ("L", 45.0): True, ("R", 45.0): True}, max_depth=3)
     assert sum(1 for n in res.nodes if n["pano_id"] == "MERGED") == 1

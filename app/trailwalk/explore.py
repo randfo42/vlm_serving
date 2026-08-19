@@ -56,23 +56,18 @@ class ExploreConfig:
     max_seconds: float = 900.0    # 벽시계 예산. 캡처(프레임 안정화) 지연까지 포함한 안전망
 
     # ── 판정 ──────────────────────────────────────────────────────────
-    fov_deg: float = 90.0         # 캡처 화각. walk 와 같은 값이어야 판정 기준이 비교 가능하다
     expand_non_trail: bool = True # "아님" 판정도 확장할 것인가. True 면 차도에서 시작해도
                                   # 건너편 산책로를 찾는다 (depth·호출 예산이 폭주를 막는다).
                                   # False 는 산책로 갈래만 따라가는 예전 방식 — 호출이 절약된다
 
     # ── 후보 ──────────────────────────────────────────────────────────
-    max_candidates: int = 4       # 한 노드에서 최대 몇 방향까지 물어볼지 (그래프 이웃 상한)
+    max_candidates: int = 4       # 한 노드에서 최대 몇 방향까지 물어볼지 (그래프 이웃 상한).
+                                  # 시작 노드에는 안 걸린다 — walk._candidates 참조
     max_turn_deg: float = 180.0   # 180 = 방향 필터 없음. walk 와 달리 U턴 방지가 필요 없다 —
                                   # 온 길은 visited 로 정확히 빠지고, 탐색은 모든 방향을 본다
 
     # ── 이웃 그래프가 없는 provider 를 위한 폴백 (walk 와 같은 값) ─────
-    step_m: float = 12.0          # 좌표 밀기 보폭
-    snap_radius_m: float = 25.0   # 민 좌표를 pano 로 스냅할 때 허용 반경
-    side_offsets: tuple[float, ...] = (-60.0, 60.0)   # 진행 방향 기준 좌우 후보 각
-    start_offsets: tuple[float, ...] = (0.0, 90.0, 180.0, 270.0)
-                                  # 시작 노드 전용. 폴백에는 "온 길" 이 없으므로 전방향을 본다.
-                                  # 그래프 provider 에서는 이웃 목록 자체가 전방향이라 안 쓴다
+    snap_radius_m: float = 25.0   # 시작 좌표를 pano 로 스냅할 때만 쓴다
 
 
 @dataclass
@@ -86,16 +81,14 @@ class ExploreResult:
     stop_reason: str = ""          # exhausted = 갈 곳을 다 갔다. 나머지는 예산/오류
     calls: int = 0
     wall_s: float = 0.0
-    used_graph: bool = False
 
 
 @dataclass
 class _Node:
     depth: int
-    bearing: float                 # 이 노드에 들어온 진행 방위. 폴백 후보 생성의 기준
+    bearing: float                 # 이 노드에 들어온 진행 방위. 후보 정렬의 기준
     came_from: str | None          # 부모 pano_id
-    pano: Pano | None = None       # 그래프 자식은 pano 를 이미 안다
-    pos: tuple[float, float] | None = None   # 폴백 자식은 좌표만 안다. 꺼낼 때 스냅한다
+    pano: Pano                     # 이웃이 곧 다음 지점이라 큐에 들어올 때 이미 안다
     is_trail: bool | None = None   # 이 노드를 발견한 판정. 시작 노드만 None (판정 전)
 
 
@@ -109,7 +102,7 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
     def probe(p: Pano, hdg: float, depth: int) -> bool | None:
         """한 방향을 물어본다. None 은 '판정 불가' (캡처 실패). walk.probe 와 같은 모양."""
         try:
-            raw = provider.capture(p, hdg, cfg.fov_deg)
+            raw = provider.capture(p, hdg)
         except Exception as e:
             if log:
                 log.event("capture_failed", step=depth, pano_id=p.pano_id,
@@ -120,15 +113,13 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
         res.calls += 1
         if log:
             log.probe(step=depth, pano_id=p.pano_id, lat=p.lat, lng=p.lng,
-                      heading=hdg, verdict=v, src_format=src_format)
+                      heading=hdg, verdict=v, src_format=src_format, image=raw)
         return v.is_trail
 
     def leftover(node: _Node, reason: str) -> dict:
         """예산에 걸려 못 간 큐 항목을 frontier 형태로."""
-        return {"from_pano": node.came_from,
-                "pano_id": node.pano.pano_id if node.pano else None,
-                "lat": node.pano.lat if node.pano else (node.pos[0] if node.pos else None),
-                "lng": node.pano.lng if node.pano else (node.pos[1] if node.pos else None),
+        return {"from_pano": node.came_from, "pano_id": node.pano.pano_id,
+                "lat": node.pano.lat, "lng": node.pano.lng,
                 "depth": node.depth, "reason": reason}
 
     # ── 시작 pano ──────────────────────────────────────────────────────
@@ -168,26 +159,6 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
 
         node = (q_trail or q_miss).popleft()
 
-        # 폴백 자식은 좌표만 들고 온다 — 여기서 스냅한다
-        if node.pano is None:
-            try:
-                node.pano = provider.nearest(node.pos[0], node.pos[1], cfg.snap_radius_m)
-            except Exception as e:
-                if log:
-                    log.event("provider_error", step=node.depth,
-                              error=f"{type(e).__name__}: {str(e).splitlines()[0]}")
-                res.stop_reason = "provider_error"
-                break
-            if node.pano is None:
-                # 이 갈래에 로드뷰가 없다. walk 와 달리 다른 갈래가 남아 있으므로
-                # 탐색 전체를 멈추지 않고 이 가지만 접는다
-                if log:
-                    log.event("no_coverage", step=node.depth, lat=node.pos[0], lng=node.pos[1])
-                continue
-            if node.pano.pano_id in visited:
-                continue               # 다른 갈래가 먼저 도달했다 (격자 스냅 중복 등)
-            visited.add(node.pano.pano_id)
-
         res.nodes.append({"pano_id": node.pano.pano_id, "lat": node.pano.lat,
                           "lng": node.pano.lng, "depth": node.depth,
                           "parent": node.came_from, "is_trail": node.is_trail})
@@ -198,20 +169,16 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
             continue
 
         # ── 후보 생성. walk 와 같은 코드 경로 — 판정 조건이 갈라지지 않게 ──
-        cands, graph = _candidates(provider, node.pano, node.bearing,
-                                   node.came_from, visited, cfg)
-        if not graph and getattr(provider, "uses_graph", False):
-            # 이웃이 실재하는 provider 에서 목록을 못 얻었다 — 갈래가 없는 게
-            # 아니라 렌더/스니핑 실패다. 추측(좌표 밀기)으로 걸으면 없는 길을
-            # 만들어내므로 여기서 접고, "안 본 곳" 으로 frontier 에 남긴다
+        cands, loaded = _candidates(provider, node.pano, node.bearing,
+                                    node.came_from, visited, cfg)
+        if not loaded:
+            # 이웃 목록을 못 얻었다 — 갈래가 없는 게 아니라 렌더/스니핑 실패다.
+            # 추측으로 걸으면 없는 길을 만들어내므로 여기서 접고, "안 본 곳" 으로
+            # frontier 에 남긴다. 이어서 탐색할 때 그대로 입력이 된다.
             if log:
                 log.event("neighbors_missing", step=node.depth, pano_id=node.pano.pano_id)
             res.frontier.append(leftover(node, "neighbors_missing"))
             continue
-        if node.came_from is None and not graph:
-            # 폴백의 시작 노드: 진행 방향이라는 개념이 아직 없다. 전방향을 본다
-            cands = [(geo.norm_deg(start_bearing + o), None) for o in cfg.start_offsets]
-        res.used_graph = res.used_graph or graph
 
         budget_hit = False
         for i, (hdg, nb) in enumerate(cands):
@@ -220,9 +187,8 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
                 # 못 물은 후보들도 frontier 다 — 판정을 안 받았을 뿐 갈래는 갈래다
                 for _h2, n2 in cands[i:]:
                     res.frontier.append({
-                        "from_pano": node.pano.pano_id,
-                        "pano_id": n2.pano_id if n2 else None,
-                        "lat": n2.lat if n2 else None, "lng": n2.lng if n2 else None,
+                        "from_pano": node.pano.pano_id, "pano_id": n2.pano_id,
+                        "lat": n2.lat, "lng": n2.lng,
                         "depth": node.depth + 1, "reason": "call_budget"})
                 budget_hit = True
                 break
@@ -245,25 +211,18 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
                 # 이 레포의 사고는 전부 그런 혼동에서 났다. 로그(capture_failed)만 남긴다
                 continue
 
-            # to_* 는 그리기/UI 용이다. 폴백 후보는 목표 pano 가 없어 None —
-            # 그 경우 좌표는 heading 방향으로 step_m 민 곳이 근사값이다
+            # to_* 는 그리기/UI 용이다. 후보가 곧 목표 pano 라 항상 채워진다.
             res.probes.append({"from_pano": node.pano.pano_id, "heading": round(hdg, 1),
-                               "to_pano": nb.pano_id if nb else None,
-                               "to_lat": nb.lat if nb else None,
-                               "to_lng": nb.lng if nb else None,
+                               "to_pano": nb.pano_id, "to_lat": nb.lat, "to_lng": nb.lng,
                                "is_trail": ok, "depth": node.depth})
-            if nb is not None:
-                # 첫 접근의 판정이 그 pano 의 판정이다 — 참이든 거짓이든 다시 묻지 않는다
-                visited.add(nb.pano_id)
+            # 첫 접근의 판정이 그 pano 의 판정이다 — 참이든 거짓이든 다시 묻지 않는다
+            visited.add(nb.pano_id)
             if not ok and not cfg.expand_non_trail:
                 continue
 
             child = _Node(depth=node.depth + 1, bearing=hdg,
-                          came_from=node.pano.pano_id, is_trail=ok)
-            if nb is not None:
-                child.pano = Pano(pano_id=nb.pano_id, lat=nb.lat, lng=nb.lng)
-            else:
-                child.pos = geo.destination((node.pano.lat, node.pano.lng), hdg, cfg.step_m)
+                          came_from=node.pano.pano_id, is_trail=ok,
+                          pano=Pano(pano_id=nb.pano_id, lat=nb.lat, lng=nb.lng))
             (q_trail if ok else q_miss).append(child)
 
         if budget_hit:
