@@ -35,12 +35,29 @@ from trailwalk import settings as settings_mod
 TRAILS = Path(__file__).resolve().parent / "trails.json"
 
 
+def merge_split_parens(wps: list[str]) -> list[str]:
+    """괄호가 안 맞는 연속 경유지를 합친다.
+
+    상세페이지가 "홍릉터(홍릉숲·산림과학원)" 을 두 `<li>` 로 쪼개 놓는 경우가
+    있다 → ["홍릉터(홍릉숲", "산림과학원)"]. 그대로 두면 둘 다 검색이 안 되고
+    (괄호가 질의를 망친다) 경유지 하나가 통째로 사라진다.
+    """
+    out: list[str] = []
+    for w in wps:
+        if out and out[-1].count("(") > out[-1].count(")"):
+            out[-1] = f"{out[-1]}·{w}"
+        else:
+            out.append(w)
+    return out
+
+
 def adapt(trails: list[dict]) -> tuple[list[dict], dict[str, int]]:
     """trails.json 항목들 → courses.json 코스들. 반환: (코스, 집계)."""
     out, stats = [], {"total": 0, "no_waypoints": 0, "ok": 0}
     for t in trails:
         stats["total"] += 1
-        wps = [w.strip() for w in (t.get("waypoints") or []) if w and w.strip()]
+        wps = merge_split_parens(
+            [w.strip() for w in (t.get("waypoints") or []) if w and w.strip()])
         # 경유지가 없거나 1개면 구간을 만들 수 없다. **드롭하지 않고** 표시한다 —
         # 조용히 빠지면 파서 회귀가 개수 감소로만 보인다.
         status = "ok" if len(wps) >= 2 else "no_waypoints"
@@ -68,9 +85,9 @@ def adapt(trails: list[dict]) -> tuple[list[dict], dict[str, int]]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--trails", type=Path, default=TRAILS)
-    st = settings_mod.load()
-    ds.add_argument(ap, st)
+    ds.add_argument(ap)
     a = ap.parse_args()
+    st = settings_mod.load()
     paths = ds.resolve(a.dataset or st.labels.dataset)
 
     raw = json.loads(a.trails.read_text(encoding="utf-8"))

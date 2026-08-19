@@ -57,8 +57,15 @@ def resolve(name: str) -> DatasetPaths:
     )
 
 
-def add_argument(ap, settings=None) -> None:
-    """스크립트 공통 `--dataset`. 기본값은 코드가 아니라 설정에서 온다."""
-    default = settings.labels.dataset if settings is not None else None
-    ap.add_argument("--dataset", default=default,
-                    help=f"app/labels/<이름>/ 의 이름 (기본: {default})")
+def add_argument(ap) -> None:
+    """스크립트 공통 `--dataset`.
+
+    ⚠️ **기본값을 argparse 에 채우지 않는다.** 채우면 `--config` 오버레이를
+    읽기 *전* 의 정본 설정으로 고정되어, 오버레이가 `labels.dataset` 을 바꿔도
+    조용히 무시된다 (sampling 값은 오버레이를 쓰면서 경로만 정본을 쓰는
+    상태가 된다 — 다른 데이터셋에 쓰거나 읽는다). 호출자가
+    `a.dataset or st.labels.dataset` 으로 해석하고, 그 st 는 --config 를
+    반영한 것이어야 한다.
+    """
+    ap.add_argument("--dataset", default=None,
+                    help="app/labels/<이름>/ 의 이름 (기본: 설정의 labels.dataset)")

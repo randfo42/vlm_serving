@@ -130,9 +130,9 @@ def run(paths: ds.DatasetPaths) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    st = settings_mod.load()
-    ds.add_argument(ap, st)
+    ds.add_argument(ap)
     a = ap.parse_args()
+    st = settings_mod.load()
     return run(ds.resolve(a.dataset or st.labels.dataset))
 
 

@@ -212,9 +212,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--keys", action="store_true",
                     help="구간별 캐시 파일명만 출력 (수동 트레이스용)")
-    st = settings_mod.load()
-    ds.add_argument(ap, st)
+    ds.add_argument(ap)
     a = ap.parse_args()
+    st = settings_mod.load()
     paths = ds.resolve(a.dataset or st.labels.dataset)
     if a.keys:
         return print_keys(paths)
@@ -228,9 +228,9 @@ def main() -> int:
     out_courses, n_missing, verified = [], 0, False
     for course in data["courses"]:
         cid = course["course_id"]
-        if course.get("status") == "incomplete":
-            # 지오코딩이 완결되지 않은 코스는 라우팅 예산을 쓰지 않는다
-            print(f"{cid} {course['name']}: 건너뜀 (지오코딩 incomplete)")
+        if course.get("status") not in (None, "ok"):
+            # 지오코딩을 믿을 수 없는 코스는 라우팅 예산을 쓰지 않는다
+            print(f"{cid} {course['name']}: 건너뜀 ({course['status']})")
             continue
         wps = effective_waypoints(course, verbose=True)
         segments = []

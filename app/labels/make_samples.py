@@ -233,10 +233,8 @@ def main() -> int:
                     help="라우팅 우회 의심 코스도 포함 (라벨 오염 위험 — 검수 필수)")
     ap.add_argument("--dry-run", action="store_true",
                     help="캡처 없이 후보 좌표만 samples_dry.jsonl 로")
-    st_pre = settings_mod.load()
-    ds.add_argument(ap, st_pre)
+    ds.add_argument(ap)
     a = ap.parse_args()
-
     st = settings_mod.load(a.config)
     cfg = st.sampling
     paths = ds.resolve(a.dataset or st.labels.dataset)

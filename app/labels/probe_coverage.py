@@ -56,10 +56,8 @@ def main() -> int:
     ap.add_argument("--points", type=int, default=8,
                     help="코스당 프로브 점 수 (기본 8)")
     ap.add_argument("--config", default=None)
-    st_pre = settings_mod.load()
-    ds.add_argument(ap, st_pre)
+    ds.add_argument(ap)
     a = ap.parse_args()
-
     st = settings_mod.load(a.config)
     cfg = st.sampling
     paths = ds.resolve(a.dataset or st.labels.dataset)
@@ -70,6 +68,8 @@ def main() -> int:
 
     provider = providers.make("kakao", settings=st, appkey=kakao_appkey())
     rows, t0 = [], time.time()
+    n_err = 0
+    errors: list[str] = []
     try:
         for n, c in enumerate(geom["courses"], 1):
             cid = c["course_id"]
@@ -80,15 +80,22 @@ def main() -> int:
             for lat, lng in pts:
                 try:
                     pano = provider.nearest(lat, lng, radius_m=cfg.snap_radius_m)
-                except Exception:
-                    continue          # 프로브는 추정치다. 한 점 실패로 코스를 죽이지 않는다
+                except Exception as e:
+                    # 한 점 실패로 코스를 죽이지는 않지만 **조용히 삼키지도
+                    # 않는다.** 세션이 깨져 전 점이 실패하면 결과가 "커버리지
+                    # 0%" 로만 보여 진짜 미커버리지와 구분되지 않는다.
+                    n_err += 1
+                    errors.append(f"{cid} nearest({lat:.5f},{lng:.5f}): {e}")
+                    print(f"\n  ! {errors[-1]}", file=sys.stderr)
+                    continue
                 if pano is None:
                     continue
                 hit += 1
                 d = min(point_to_polyline_m((pano.lat, pano.lng), p) for p in polys)
                 if d <= cfg.snap_radius_m * 1.5:
                     on_route += 1
-            row = {"course_id": cid, "name": c["name"],
+            n_err_course = sum(1 for m in errors if m.startswith(f"{cid} "))
+            row = {"course_id": cid, "name": c["name"], "n_error": n_err_course,
                    "theme": c.get("theme"), "gu": c.get("gu"),
                    "suspect": bool(c.get("suspect")), "ratio": c.get("ratio"),
                    "n_probe": len(pts), "pano_hit": hit, "on_route": on_route,
@@ -107,8 +114,11 @@ def main() -> int:
         "generated_at": datetime.now(UTC).astimezone().isoformat(timespec="seconds"),
         "dataset": paths.name, "points_per_course": a.points,
         "snap_radius_m": cfg.snap_radius_m, "head_m": cfg.head_m,
-        "courses": rows,
+        "courses": rows, "n_errors": n_err, "errors": errors[:50],
     }, ensure_ascii=False, indent=1), encoding="utf-8")
+    if n_err:
+        print(f"⚠ nearest 실패 {n_err}건 — 그만큼 커버리지가 과소평가된다. "
+              f"coverage.json 의 errors 를 볼 것", file=sys.stderr)
 
     # 테마별 요약 — docs/22-labels.md §9 퍼널 표에 그대로 옮긴다
     by_theme: dict[str, list[int]] = {}

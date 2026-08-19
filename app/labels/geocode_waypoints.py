@@ -59,7 +59,7 @@ def gu_center(key: str, gu: str | None) -> tuple[float, float]:
     """
     if not gu:
         return SEOUL_CENTER
-    first = gu.split(",")[0].strip()
+    first = gu.split(",")[0].strip().split()[-1]   # "경기도 과천시" → "과천시"
     if first in _GU_CACHE:
         return _GU_CACHE[first]
     try:
@@ -187,9 +187,9 @@ def search(key: str, name: str, near: tuple[float, float], cap_m: float,
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    st = settings_mod.load()
-    ds.add_argument(ap, st)
+    ds.add_argument(ap)
     a = ap.parse_args()
+    st = settings_mod.load()
     paths = ds.resolve(a.dataset or st.labels.dataset)
 
     key = kakao_rest_key()
@@ -235,7 +235,10 @@ def main() -> int:
                 # 일치로 잡혔던 사고를 거리 상한보다 직접적으로 잡는다.
                 # 여러 구에 걸친 코스("마포구,용산구")와 서울 밖은 통과시킨다.
                 found = gu_of(doc)
-                if gu and found and found not in {g.strip() for g in gu.split(",")}:
+                # "경기도 과천시" 처럼 도 이름이 붙어 오고, 여러 구에 걸친
+                # 코스("마포구,용산구")도 있다. 마지막 토큰끼리 비교한다.
+                want = {g.strip().split()[-1] for g in gu.split(",")} if gu else set()
+                if want and found and found not in want:
                     row["gu_found"] = found
                     n_warn += 1
             if prev is not None:
@@ -248,11 +251,20 @@ def main() -> int:
                                 + f",{row['lat']},{row['lng']}")
             prev = (row["lat"], row["lng"])
             rows.append(row)
-        # 코스 단위 격리: missing 이 있는 코스만 incomplete 로 빼고 나머지는
-        # 진행한다. 900경유지 규모에서 한 건 실패가 전체를 막으면 안 된다.
+        # 코스 단위 격리. **경유지 2개면 구간이 하나 나오므로 쓸 수 있다** —
+        # 한 건 실패로 코스를 통째로 버리면 817경유지에서 대부분을 잃는다
+        # (실측: 전건 성공 요구 시 54/150, 2개 이상 요구 시 128/150).
         n_ok = sum(1 for r in rows if r["status"] != "missing")
-        status = "ok" if n_ok == len(rows) and n_ok >= 2 else "incomplete"
-        if status == "incomplete":
+        n_gu = sum(1 for r in rows if r.get("gu_found"))
+        if n_ok < 2:
+            status = "incomplete"           # 구간을 만들 수 없다
+        elif n_ok and n_gu / n_ok > 0.5:
+            # 절반 넘게 딴 자치구에 잡혔다 = 경유지 이름이 검색 가능한 POI 가
+            # 아니다 (예: 문화비축기지의 "T1"~"T6"). 좌표를 믿을 수 없다.
+            status = "suspect_geocode"
+        else:
+            status = "ok"
+        if status != "ok":
             n_incomplete += 1
         # 경유지 직선 연결 길이 / 공식 거리 — 코스당 스칼라 하나로 훑는다
         pts = [(r["lat"], r["lng"]) for r in rows if r["status"] != "missing"]
@@ -261,6 +273,8 @@ def main() -> int:
         out_courses.append({"course_id": cid, "name": course["name"],
                             "gu": gu, "theme": course.get("theme"),
                             "status": status,
+                            "n_geocoded": n_ok, "n_missing": len(rows) - n_ok,
+                            "n_gu_mismatch": n_gu,
                             "chain_m": round(chain_m),
                             "chain_ratio": round(chain_m / (km * 1000), 2) if km else None,
                             "waypoints": rows})
@@ -274,10 +288,9 @@ def main() -> int:
         "course_id\tname\tgu\ttheme\tstatus\tn_wp\tmissing\tweak\tgu_mismatch\tchain_ratio\n"
         + "".join(
             f"{c['course_id']}\t{c['name']}\t{c.get('gu') or ''}\t{c.get('theme') or ''}\t"
-            f"{c['status']}\t{len(c['waypoints'])}\t"
-            f"{sum(1 for r in c['waypoints'] if r['status'] == 'missing')}\t"
+            f"{c['status']}\t{len(c['waypoints'])}\t{c['n_missing']}\t"
             f"{sum(1 for r in c['waypoints'] if r.get('match') == 'weak')}\t"
-            f"{sum(1 for r in c['waypoints'] if r.get('gu_found'))}\t"
+            f"{c['n_gu_mismatch']}\t"
             f"{c['chain_ratio']}\n" for c in out_courses),
         encoding="utf-8")
     paths.waypoints.write_text(json.dumps({
@@ -293,10 +306,12 @@ def main() -> int:
         # (청계천길)처럼 정당한 경우가 실제로 있다.
         print(f"경고 {n_warn}건 — waypoints.json 의 ?/! 항목의 check_url 을 "
               f"먼저 확인할 것", file=sys.stderr)
-    if n_missing:
-        print(f"missing {n_missing} · incomplete 코스 {n_incomplete} — 그 코스는 "
-              f"status=incomplete 로 빠진다. 살리려면 overrides.json 을 채우고 "
-              f"재실행할 것 (형식은 이 파일 독스트링)", file=sys.stderr)
+    n_use = sum(1 for c in out_courses if c["status"] == "ok")
+    print(f"쓸 수 있는 코스 {n_use}/{len(out_courses)} · 경유지 missing {n_missing}")
+    if n_incomplete:
+        print(f"제외 {n_incomplete}코스 (incomplete=경유지 2개 미만, "
+              f"suspect_geocode=절반 넘게 딴 자치구). 살리려면 overrides.json 을 "
+              f"채우고 재실행 (형식은 이 파일 독스트링)", file=sys.stderr)
     return 0
 
 

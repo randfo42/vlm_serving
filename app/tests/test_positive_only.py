@@ -260,3 +260,26 @@ def test_course_bearing_matches_segment_direction(tmp_path):
     rows, _ = _collect(tmp_path, FakeProvider(arrows=(0.0,)))
     north = bearing_deg((37.57, 127.0), (37.572, 127.0))
     assert rows[0]["course_bearing"] == pytest.approx(north, abs=0.1)
+
+
+def test_dataset_arg_has_no_baked_default():
+    """--dataset 기본값을 argparse 에 채우면 --config 오버레이가 무시된다.
+
+    채워두면 a.dataset 이 절대 None 이 아니라 `a.dataset or st.labels.dataset`
+    의 뒷항이 죽고, sampling 값은 오버레이를 쓰면서 경로만 정본을 쓰는
+    상태가 된다 — 다른 데이터셋에 쓰거나 읽는다 (리뷰 지적).
+    """
+    import argparse
+    ap = argparse.ArgumentParser()
+    dataset.add_argument(ap)
+    assert ap.parse_args([]).dataset is None
+    assert ap.parse_args(["--dataset", "x"]).dataset == "x"
+
+
+def test_merge_split_parens():
+    # 상세페이지가 "홍릉터(홍릉숲·산림과학원)" 을 두 li 로 쪼갠다
+    assert adapt.merge_split_parens(["홍릉터(홍릉숲", "산림과학원)", "영휘원"]) == \
+        ["홍릉터(홍릉숲·산림과학원)", "영휘원"]
+    # 정상 입력은 건드리지 않는다
+    assert adapt.merge_split_parens(["안암2교(성북천)", "청계천"]) == \
+        ["안암2교(성북천)", "청계천"]
