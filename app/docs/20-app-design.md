@@ -156,7 +156,9 @@ walk 는 `neighbors_missing` 으로 멈추고, explore 는 그 갈래만 frontie
 | `no_coverage` | 반경 안에 pano 가 없음. **산책로의 끝과 구분되지 않는다** |
 | `dead_end` | 갈 곳이 없음 — 판정이 `miss_tolerance` 회 연속 실패했거나, 이웃이 전부 온 길/기방문 |
 | `neighbors_missing` | **이웃 목록을 못 얻음.** 길의 끝이 아니라 렌더/스니핑 실패다 |
+| `capture_failed` | **한 스텝의 전 후보가 판정 불가**(캡처 실패). "아님" 이 아니라 API 쪽 실패다 — 모르는 채 걷지 않는다 |
 | `image_ignored` / `server_dead` / `vlm_error` | §5 |
+| (예외) `ProviderError` | provider 가 원인을 규명해 터뜨린 실패 (노드 응답 형식 변경 등). 삼키지 않고 런을 죽인다 |
 
 > `no_coverage` 와 `dead_end` 를 섞으면 안 된다. 앞은 지도 사업자가 안 찍은 것이고
 > 뒤는 모델의 판정이다. 정확도를 볼 때 둘을 한 통에 넣으면 모델이 억울해진다.

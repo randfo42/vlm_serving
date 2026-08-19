@@ -9,7 +9,7 @@ VLM 에게 묻는 것은 오직 **"이 장면이 산책로인가"** 하나다. �
     현재 pano
       → 이웃 목록 (화면의 흰 화살표와 같은 것). 온 길과 이미 밟은 곳은 뺀다
       → 진행 방향에 가까운 순으로 정렬 — 맨 앞이 "정면"
-      → 후보를 한 장씩 캡처해 VLM 에 묻는다 (그래프면 전부, 폴백이면 첫 성공까지)
+      → 후보를 한 장씩 캡처해 VLM 에 묻는다 (기본: 전부. --first-hit 로 첫 성공까지)
       → 산책로 중 **가장 정면인 것**으로 그 pano 로 바로 이동
       → 나머지 산책로 갈래는 frontier 에 남긴다 — 여러 방향이 동시에 산책로일 수 있다
 
@@ -30,15 +30,16 @@ VLM 에게 묻는 것은 오직 **"이 장면이 산책로인가"** 하나다. �
 - **막다른 길이 명확하다.** 이웃이 없으면 없는 것이다. "스냅이 실패했나
   길이 끝났나" 를 구분할 필요가 없다
 
-이웃을 못 주는 provider(fixture 등)에서는 **자동으로 좌표 밀기로 되돌아간다.**
-두 방식이 같은 판정 루프를 공유하도록 후보 목록 형태로 통일했다.
+이동은 이 그래프 **하나뿐이다.** 좌표를 heading 방향으로 밀어 다시 스냅하던
+폴백은 없앴다 — 이웃을 못 얻으면 지어내지 않고 `neighbors_missing` 으로
+멈춘다. fixture 도 격자를 그래프로 정직하게 준다 (→ providers/fixture.py).
 """
 import time
 from dataclasses import dataclass, field
 
 from . import geo
 from .imaging import view_to_data_uri
-from .providers.base import Neighbor, Pano
+from .providers.base import Neighbor, Pano, ProviderError
 from .vlm import ImageIgnoredError, ServerDeadError, VlmError
 
 
@@ -91,6 +92,9 @@ def _candidates(provider, pano: Pano, bearing: float, came_from: str | None,
     """
     try:
         nbrs = provider.neighbors(pano)
+    except ProviderError:
+        raise           # provider 가 이름 붙여 터뜨린 실패다 (형식 변경 등).
+                        # neighbors_missing 으로 뭉개면 원인이 소실된다
     except Exception:
         nbrs = []
     if not nbrs:
@@ -157,7 +161,7 @@ def walk(provider, client, start: tuple[float, float], start_bearing: float,
             res.stop_reason = "time_budget"; break
 
         # ── 현재 pano 확정 ────────────────────────────────────────────
-        # 그래프 이동이면 이미 정해져 있다. 최초 스텝이나 폴백 이동이면 스냅한다.
+        # 그래프 이동이면 이미 정해져 있다. 최초 스텝만 좌표에서 스냅한다.
         if pano is None:
             try:
                 pano = provider.nearest(pos[0], pos[1], cfg.snap_radius_m)
@@ -199,9 +203,18 @@ def walk(provider, client, start: tuple[float, float], start_bearing: float,
         probe_all = cfg.probe_all
         chosen: tuple[float, Neighbor] | None = None
         oks: list[tuple[float, Neighbor]] = []
+        judged: list[tuple[float, Neighbor]] = []   # 판정을 실제로 받은 후보 ("아님" 포함)
+        failed = 0
         try:
             for hdg, nb in cands:
-                if probe(pano, hdg, res.steps):
+                ok = probe(pano, hdg, res.steps)
+                if ok is None:
+                    # 판정 불가(캡처 실패). "아님" 이 아니라 API 쪽 실패다 —
+                    # miss 로 세면 렌더 장애가 dead_end 로 둔갑한다
+                    failed += 1
+                    continue
+                judged.append((hdg, nb))
+                if ok:
                     oks.append((hdg, nb))
                     if not probe_all:
                         break       # 정면에 가까운 쪽부터 봤으니 첫 성공이 최선이다
@@ -233,15 +246,27 @@ def walk(provider, client, start: tuple[float, float], start_bearing: float,
 
         res.path.append({"pano_id": pano.pano_id, "lat": pano.lat, "lng": pano.lng,
                          "bearing": round(bearing, 1), "is_trail": chosen is not None,
-                         "n_candidates": len(cands), "n_trails": len(oks)})
+                         "n_candidates": len(cands), "n_trails": len(oks),
+                         "n_failed": failed})    # 판정 불가(캡처 실패) 후보 수
+
+        if chosen is None and not judged:
+            # 어느 후보도 판정을 못 받았다. "어느 방향도 산책로가 아니다" 가
+            # 아니라 **아무것도 알아내지 못한 것**이다 — 모르는 채 한 칸 밀면
+            # 예전의 캡처실패=아님 혼동이 되돌아온다. API 실패로 이름 붙여 멈춘다.
+            res.stop_reason = "capture_failed"
+            if log:
+                log.event("all_captures_failed", step=res.steps, pano_id=pano.pano_id)
+            break
 
         if chosen is None:
             misses += 1
             if misses > cfg.miss_tolerance:
                 res.stop_reason = "dead_end"; break
-            # 아직 참는다: 가장 정면인 후보로 한 칸 밀어보고 다시 판단한다.
-            # 나무 그늘이나 역광 한 장 때문에 멀쩡한 길을 포기하는 일이 실제로 있다.
-            chosen = cands[0]
+            # 아직 참는다: **판정을 받은** 후보 중 가장 정면인 것으로 한 칸
+            # 밀어보고 다시 판단한다. 나무 그늘이나 역광 한 장 때문에 멀쩡한
+            # 길을 포기하는 일이 실제로 있다. cands[0] 을 그대로 쓰면 안 된다 —
+            # 캡처가 실패한(판정 없는) 후보일 수 있고, 그러면 모르는 채 걷는다.
+            chosen = judged[0]
         else:
             misses = 0
 

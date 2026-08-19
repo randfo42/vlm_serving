@@ -10,8 +10,10 @@ VLM 도 브라우저도 없이 돈다. 여기서 검증하는 것은 판정 **�
   전자를 후자처럼 다루면 로드뷰에 없는 길을 걸어간 것처럼 보인다
 - 갈림길에서 하나만 따라가되 나머지를 버리지 않는다
 """
+import pytest
+
 from conftest import make_image
-from trailwalk.providers.base import Neighbor, Pano
+from trailwalk.providers.base import Neighbor, Pano, ProviderError
 from trailwalk.walk import WalkConfig, walk
 
 
@@ -247,6 +249,74 @@ def test_provider가_예외를_던져도_지어내지_않는다():
     res = run(p, {}, max_steps=5)
     assert res.stop_reason == "neighbors_missing"
     assert p.nearest_calls == 1
+
+
+def test_provider가_이름붙여_터뜨린_실패는_삼키지_않는다():
+    """ProviderError 는 provider 가 원인을 규명해 던진 것이다 (노드 응답 형식
+    변경 등). neighbors_missing 으로 뭉개면 그 원인이 통째로 사라진다."""
+    p = Provider({"S": [nb("A", 90.0)]})
+
+    def boom(_pano):
+        raise ProviderError("이웃 응답 파싱 실패 — 형식이 바뀐 것으로 보인다")
+
+    p.neighbors = boom
+    with pytest.raises(ProviderError):
+        run(p, {}, max_steps=5)
+
+
+# ── 캡처 실패 ───────────────────────────────────────────────────────────────
+#
+# 판정 불가(캡처 실패)와 "산책로 아님" 은 다른 사실이다. 전자를 후자로 세면
+# 렌더 장애가 dead_end 로 둔갑하고, 결과만 보면 모델이 거절한 것처럼 보인다.
+
+def test_전_후보_캡처_실패는_dead_end가_아니라_capture_failed다():
+    p = Provider({"S": [nb("A", 90.0)], "A": [nb("S", 270.0)]})
+
+    def boom(_pano, _heading):
+        raise RuntimeError("렌더 죽음")
+
+    p.capture = boom
+    res = run(p, {}, max_steps=5)
+    assert res.stop_reason == "capture_failed"
+    assert res.path[0]["n_failed"] == 1
+    assert res.path[0]["n_trails"] == 0
+
+
+def test_미스_전진은_판정받은_후보로만_간다():
+    """⚠️ 리뷰가 잡은 회귀. 정면(A) 캡처 실패 + 옆(B) "아님" 인 스텝에서
+    miss-tolerance 전진이 cands[0](=A, 판정 없음)을 고르면 한 번도 판정되지
+    않은 pano 로 걸어 들어가면서 path 에는 정상 스텝처럼 남는다."""
+    p = Provider({"S": [nb("A", 90.0), nb("B", 180.0)],
+                  "B": [nb("S", 0.0), nb("C", 180.0)], "C": [nb("B", 0.0)]})
+    orig = Provider.capture
+
+    def flaky(pano, heading):
+        if (pano.pano_id, round(heading, 1)) == ("S", 90.0):
+            raise RuntimeError("정면만 렌더 실패")
+        return orig(p, pano, heading)
+
+    p.capture = flaky
+    res = run(p, {}, max_steps=5, miss_tolerance=2)
+    walked = [step["pano_id"] for step in res.path]
+    assert "A" not in walked, "판정 없는 후보로 걸어 들어갔다"
+    assert walked[:2] == ["S", "B"]
+
+
+def test_일부_캡처_실패는_기록만_남기고_계속_간다():
+    p = Provider({"S": [nb("A", 90.0), nb("B", 180.0)],
+                  "B": [nb("S", 0.0)]})
+    orig = Provider.capture
+
+    def flaky(pano, heading):
+        if round(heading, 1) == 90.0:
+            raise RuntimeError("이 방향만 렌더 실패")
+        return orig(p, pano, heading)
+
+    p.capture = flaky
+    res = run(p, {("S", 180.0): True}, max_steps=5)
+    assert res.path[0]["n_failed"] == 1
+    assert res.path[0]["is_trail"] is True, "판정된 산책로로는 계속 가야 한다"
+    assert res.stop_reason != "capture_failed"
 
 
 # ── 종료 조건 ───────────────────────────────────────────────────────────────

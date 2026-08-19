@@ -12,9 +12,11 @@ test_walk.py 와 같은 원칙이다: VLM 도 브라우저도 없이, 판정 **�
 - 예산(depth/호출)에 걸린 갈래는 사라지지 않고 frontier 에 남는다
 - 한 갈래의 no_coverage 가 탐색 전체를 멈추지 않는다 (walk 와 다른 점)
 """
+import pytest
 from test_walk import Client, Provider, nb
 
 from trailwalk.explore import ExploreConfig, explore
+from trailwalk.providers.base import ProviderError
 
 
 def run(provider, verdicts, bearing=0.0, **cfg):
@@ -47,6 +49,19 @@ def test_시작점에_로드뷰가_없으면_no_coverage():
     res = run(p, {})
     assert res.stop_reason == "no_coverage"
     assert res.calls == 0
+
+
+def test_provider가_이름붙여_터뜨린_실패는_삼키지_않는다():
+    """walk 와 같은 배선(_candidates)을 지나므로 같은 불변식이다 — ProviderError
+    (노드 응답 형식 변경 등)를 neighbors_missing 으로 뭉개면 원인이 사라진다."""
+    p = Provider({"S": [nb("A", 90.0)]})
+
+    def boom(_pano):
+        raise ProviderError("이웃 응답 파싱 실패 — 형식이 바뀐 것으로 보인다")
+
+    p.neighbors = boom
+    with pytest.raises(ProviderError):
+        run(p, {})
 
 
 # ── 분기 ───────────────────────────────────────────────────────────────────
