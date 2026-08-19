@@ -44,30 +44,21 @@ from .vlm import ImageIgnoredError, ServerDeadError, VlmError
 
 @dataclass
 class WalkConfig:
-    fov_deg: float = 90.0
     max_candidates: int = 3       # 한 스텝에서 최대 몇 방향까지 물어볼지
     max_turn_deg: float = 120.0   # 이보다 크게 꺾이는 이웃은 후보에서 뺀다 (U턴 방지)
     max_steps: int = 120
 
     # 후보를 전부 물을 것인가, 첫 성공에서 멈출 것인가.
     #
-    # None = 자동: **그래프면 전부, 폴백이면 첫 성공에서 멈춤.**
-    #
-    # 근거가 비용이다. 그래프 후보는 온 길을 뺀 실제 이웃이라 직선 구간에서는
-    # 개수가 1이다 — 전부 물어도 1호출이고, 개수가 2 이상인 곳은 진짜 갈림길이라
-    # 어차피 알아야 한다. 즉 늘어나야 할 곳에서만 늘어난다.
-    #
-    # 폴백 후보(bearing, ±60°)는 성격이 다르다. 실제 갈래가 아니라 추측이고
-    # 항상 3개다. 전부 물으면 매 스텝 3배가 되는데 얻는 게 없다.
-    probe_all: bool | None = None
+    # 근거가 비용이다. 후보는 온 길을 뺀 실제 이웃이라 직선 구간에서는 개수가
+    # 1이다 — 전부 물어도 1호출이고, 개수가 2 이상인 곳은 진짜 갈림길이라
+    # 어차피 알아야 한다. 즉 늘어나야 할 곳에서만 늘어난다. 그래서 기본이 전부다.
+    probe_all: bool = True
     max_seconds: float = 900.0
     miss_tolerance: int = 2       # 어느 방향도 산책로가 아닌 스텝을 몇 번 참을지
-    revisit_tolerance: int = 3
 
-    # ── 이웃 그래프가 없는 provider 를 위한 폴백 ──
-    step_m: float = 12.0
+    # 시작 좌표를 pano 로 스냅할 때만 쓴다. 이후 이동은 전부 그래프다
     snap_radius_m: float = 25.0
-    side_offsets: tuple[float, ...] = (-60.0, 60.0)
 
 
 @dataclass
@@ -77,7 +68,6 @@ class WalkResult:
     steps: int = 0
     calls: int = 0
     wall_s: float = 0.0
-    used_graph: bool = False
 
     # 산책로라고 판정됐지만 가지 않은 갈래들. 한 지점에서 여러 방향이 동시에
     # 산책로일 수 있고(갈림길이 그런 곳이다), 우리는 그중 하나만 따라간다.
@@ -87,33 +77,45 @@ class WalkResult:
 
 
 def _candidates(provider, pano: Pano, bearing: float, came_from: str | None,
-                visited: dict, cfg: WalkConfig) -> tuple[list[tuple[float, Neighbor | None]], bool]:
-    """갈 만한 방향들을 **진행 방향에 가까운 순으로**. (후보, 그래프였나).
+                visited: set[str], cfg: WalkConfig) -> tuple[list[tuple[float, Neighbor]], bool]:
+    """갈 만한 방향들을 **진행 방향에 가까운 순으로**. (후보, 이웃을 얻었나).
 
-    맨 앞이 "정면" 이다. 이웃 그래프가 있으면 정면이 실측 방위각이고,
-    없으면 그냥 현재 진행 방위다.
+    맨 앞이 "정면" 이고, 그 방위는 이웃의 **실측 방위각**이다 (노드 JSON 의
+    `spot[].pan`). 우리가 각도를 지어내는 자리는 없다.
+
+    시작 노드(`came_from is None`)는 후보를 **하나도 안 뺀다** — 아래 참조.
+
+    두 번째 값이 False 면 **이웃 목록 자체를 못 얻은 것**이다 — 갈래가 없는
+    것과 구분해야 한다. 빈 후보 목록은 "이웃은 있는데 전부 온 길/기방문"
+    (진짜 막다른 길)을 뜻한다.
     """
     try:
         nbrs = provider.neighbors(pano)
     except Exception:
         nbrs = []
+    if not nbrs:
+        return [], False
 
-    if nbrs:
-        # 온 길과 이미 밟은 곳을 뺀다. 이게 그래프를 쓰는 가장 큰 이유다 —
-        # 각도로 어림하지 않고 정확히 지운다.
-        fresh = [n for n in nbrs
-                 if n.pano_id != came_from and n.pano_id not in visited]
-        fresh.sort(key=lambda n: geo.angle_diff(n.heading, bearing))
-        turnable = [n for n in fresh if geo.angle_diff(n.heading, bearing) <= cfg.max_turn_deg]
-        picked = (turnable or fresh)[:cfg.max_candidates]
-        if picked:
-            return [(n.heading, n) for n in picked], True
-        # 이웃은 있는데 전부 온 길/기방문이면 막다른 길이다. 폴백으로 새지 않는다.
-        return [], True
+    # 온 길과 이미 밟은 곳을 뺀다. 이게 그래프를 쓰는 가장 큰 이유다 —
+    # 각도로 어림하지 않고 정확히 지운다.
+    fresh = [n for n in nbrs
+             if n.pano_id != came_from and n.pano_id not in visited]
+    fresh.sort(key=lambda n: geo.angle_diff(n.heading, bearing))
 
-    # 그래프를 못 주는 provider — 예전 방식(좌표 밀기)으로 돈다
-    offs = (0.0, *cfg.side_offsets)[:cfg.max_candidates]
-    return [(geo.norm_deg(bearing + o), None) for o in offs], False
+    if came_from is None:
+        # ── 시작 노드: 화살표를 하나도 빼지 않는다 ──
+        #
+        # 여기엔 "온 길" 이 없다. 그런데도 U턴 필터(max_turn_deg)를 걸면
+        # **사용자가 준 --bearing 이 방향을 지우는 필터가 된다.** 청계천에서
+        # 실측: 이웃이 동 91.4°/서 267.8° 인데 `--bearing 45` 를 주면 서쪽이
+        # 137° 로 걸려 아예 안 물어본다. frontier 에도 안 남아 흔적이 없다.
+        #
+        # 시작점 판정은 "여기서 갈 수 있는 길이 하나라도 산책로인가" 이므로
+        # 갈 수 있는 방향을 전부 봐야 한다. 호출 수 = 화살표 개수.
+        return [(n.heading, n) for n in fresh], True
+
+    turnable = [n for n in fresh if geo.angle_diff(n.heading, bearing) <= cfg.max_turn_deg]
+    return [(n.heading, n) for n in (turnable or fresh)[:cfg.max_candidates]], True
 
 
 def walk(provider, client, start: tuple[float, float], start_bearing: float,
@@ -128,13 +130,13 @@ def walk(provider, client, start: tuple[float, float], start_bearing: float,
     pos = start
     pano: Pano | None = None
     came_from: str | None = None
-    visited: dict[str, int] = {}
-    misses = revisits = 0
+    visited: set[str] = set()
+    misses = 0
 
     def probe(p: Pano, hdg: float, step: int) -> bool | None:
         """한 방향을 물어본다. None 은 '판정 불가' (캡처 실패)."""
         try:
-            raw = provider.capture(p, hdg, cfg.fov_deg)
+            raw = provider.capture(p, hdg)
         except Exception as e:
             if log:
                 log.event("capture_failed", step=step, pano_id=p.pano_id,
@@ -145,7 +147,7 @@ def walk(provider, client, start: tuple[float, float], start_bearing: float,
         res.calls += 1
         if log:
             log.probe(step=step, pano_id=p.pano_id, lat=p.lat, lng=p.lng,
-                      heading=hdg, verdict=v, src_format=src_format)
+                      heading=hdg, verdict=v, src_format=src_format, image=raw)
         return v.is_trail
 
     while True:
@@ -172,27 +174,31 @@ def walk(provider, client, start: tuple[float, float], start_bearing: float,
                     log.event("no_coverage", step=res.steps, lat=pos[0], lng=pos[1])
                 break
 
-        seen = visited.get(pano.pano_id, 0)
-        visited[pano.pano_id] = seen + 1
-        if seen:
-            revisits += 1
-            if log:
-                log.event("revisit", step=res.steps, pano_id=pano.pano_id, count=seen + 1)
-            if revisits > cfg.revisit_tolerance:
-                res.stop_reason = "revisit_loop"; break
+        # 재방문 감지가 여기 있었다. 지웠다 — 이제 **구조적으로 불가능**하기 때문이다.
+        # `_candidates` 가 visited 를 후보에서 빼므로 다음 지점은 항상 처음 밟는
+        # 곳이다. 같은 pano 로 되돌아올 수 있었던 것은 좌표 밀기가 근처 pano 로
+        # 다시 스냅했기 때문이고, 그 이동을 없앴다 (→ docs/20-app-design.md §3).
+        visited.add(pano.pano_id)
 
         # ── 방향 결정 ──────────────────────────────────────────────────
-        cands, graph = _candidates(provider, pano, bearing, came_from, visited, cfg)
-        res.used_graph = res.used_graph or graph
+        cands, loaded = _candidates(provider, pano, bearing, came_from, visited, cfg)
+        if not loaded:
+            # 이웃 목록을 못 얻었다. 갈래가 없는 게 아니라 렌더/스니핑 실패다.
+            # 예전에는 여기서 좌표 밀기로 되돌아갔는데, 그러면 없는 길을 지어내면서
+            # 런은 멀쩡해 보인다 — 가장 나쁜 종류의 실패다. 멈추고 이름을 붙인다.
+            res.stop_reason = "neighbors_missing"
+            if log:
+                log.event("neighbors_missing", step=res.steps, pano_id=pano.pano_id)
+            break
         if not cands:
             res.stop_reason = "dead_end"
             if log:
                 log.event("no_candidates", step=res.steps, pano_id=pano.pano_id)
             break
 
-        probe_all = cfg.probe_all if cfg.probe_all is not None else graph
-        chosen: tuple[float, Neighbor | None] | None = None
-        oks: list[tuple[float, Neighbor | None]] = []
+        probe_all = cfg.probe_all
+        chosen: tuple[float, Neighbor] | None = None
+        oks: list[tuple[float, Neighbor]] = []
         try:
             for hdg, nb in cands:
                 if probe(pano, hdg, res.steps):
@@ -217,9 +223,8 @@ def walk(provider, client, start: tuple[float, float], start_bearing: float,
             for hdg, nb in oks[1:]:
                 res.frontier.append({
                     "from_pano": pano.pano_id, "from_step": res.steps,
-                    "heading": round(hdg, 1),
-                    "pano_id": nb.pano_id if nb else None,
-                    "lat": nb.lat if nb else None, "lng": nb.lng if nb else None,
+                    "heading": round(hdg, 1), "pano_id": nb.pano_id,
+                    "lat": nb.lat, "lng": nb.lng,
                 })
             if log:
                 log.event("branch", step=res.steps, pano_id=pano.pano_id,
@@ -244,12 +249,8 @@ def walk(provider, client, start: tuple[float, float], start_bearing: float,
         hdg, nb = chosen
         bearing = hdg
         came_from = pano.pano_id
-        if nb is not None:
-            # 그래프 이동. 좌표를 밀 필요도, 다시 스냅할 필요도 없다.
-            pano = Pano(pano_id=nb.pano_id, lat=nb.lat, lng=nb.lng)
-        else:
-            pos = geo.destination((pano.lat, pano.lng), hdg, cfg.step_m)
-            pano = None             # 다음 바퀴에서 스냅한다
+        # 좌표를 밀 필요도, 다시 스냅할 필요도 없다. 이웃이 곧 다음 지점이다.
+        pano = Pano(pano_id=nb.pano_id, lat=nb.lat, lng=nb.lng)
         res.steps += 1
 
     res.wall_s = time.time() - t0
