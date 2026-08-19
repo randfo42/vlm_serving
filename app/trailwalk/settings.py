@@ -15,8 +15,8 @@ walk 3 / explore 4, `max_turn_deg` 가 walk 120 / explore 180(=무효),
 설정 파일의 나쁜 실패는 둘 다 에러를 안 낸다:
 
 - `max_candidate: 8` — 오타. 8이 먹었다고 믿지만 기본값이 돈다
-- `probe_all: "no"` — YAML 에서 따옴표 친 no 는 **문자열**이고,
-  `if not probe_all:` 은 비어 있지 않은 문자열을 참으로 읽는다.
+- `resume: "no"` — YAML 에서 따옴표 친 no 는 **문자열**이고,
+  `if not resume:` 은 비어 있지 않은 문자열을 참으로 읽는다.
   끄려던 옵션이 켜진 채로 런이 끝난다
 
 그래서 **모르는 키도(`_build`), 안 맞는 타입도(`_coerce`) 즉시 터뜨린다.**
@@ -59,15 +59,12 @@ class RunSettings:
 class BudgetSettings:
     max_vlm_calls: int
     max_seconds: float
-    walk_max_steps: int
     explore_max_depth: int
 
 
 @dataclass(frozen=True)
 class CandidateSettings:
     max_candidates: int
-    probe_all: bool
-    miss_tolerance: int
     expand_non_trail: bool
 
 
@@ -164,8 +161,8 @@ class Settings:
 def _coerce(v: Any, hint: Any, where: str, name: str):
     """값 하나를 선언된 타입으로. 안 맞으면 터뜨린다.
 
-    타입을 안 보면 `probe_all: "no"` 가 조용히 통과한다 — YAML 에서 따옴표
-    친 "no" 는 문자열이고, `if not probe_all:` 은 비어 있지 않은 문자열을
+    타입을 안 보면 `resume: "no"` 가 조용히 통과한다 — YAML 에서 따옴표
+    친 "no" 는 문자열이고, `if not resume:` 은 비어 있지 않은 문자열을
     참으로 읽는다. **끄려던 옵션이 켜진 채로 런이 돈다.** 에러도 안 난다.
     이 레포의 사고는 전부 이런 모양이었다.
     """
@@ -194,7 +191,7 @@ def _coerce(v: Any, hint: Any, where: str, name: str):
 
     if hint is bool:
         # bool 을 먼저 본다. 파이썬에서 bool 은 int 의 하위형이라 순서가 뒤집히면
-        # `probe_all: 1` 같은 것이 int 검사에 먼저 걸린다.
+        # `expand_non_trail: 1` 같은 것이 int 검사에 먼저 걸린다.
         if not isinstance(v, bool):
             raise bad("true 또는 false")
         return v

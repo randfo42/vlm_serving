@@ -240,7 +240,7 @@ class _Handler(BaseHTTPRequestHandler):
 
 class KakaoProvider:
     name = "kakao"
-    # 런 스크립트가 RunLog.event 를 꽂는다 (→ run_walk/run_explore). provider 는
+    # 런 스크립트가 RunLog.event 를 꽂는다 (→ run_explore.py). provider 는
     # 런로그 형식을 모른 채 신호만 쏘고, 안 꽂히면(테스트 등) 카운터만 남는다.
     on_event = None
     # 클래스 기본값 — __new__ 로 만드는 테스트 인스턴스에서도 안전하게.
@@ -399,7 +399,7 @@ class KakaoProvider:
     def neighbors(self, pano: Pano) -> list[Neighbor]:
         """이 pano 의 인접 pano 들. 화면의 흰 화살표와 같은 것이다.
 
-        SDK 는 **띄운 적이 있는 pano** 의 노드 응답만 받아온다. walk 는 항상
+        SDK 는 **띄운 적이 있는 pano** 의 노드 응답만 받아온다. 직선 이동은 항상
         현재 pano 를 띄운 채로 물어서 문제가 없었지만, explore 의 BFS 는 큐에서
         꺼낸 pano 를 아직 안 띄운 채 이웃부터 묻는다 — 그 경우 응답이 영영 안
         오고, 기다리다 빈 목록을 주면 호출자가 좌표 밀기로 새어 버린다

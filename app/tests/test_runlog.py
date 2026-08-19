@@ -85,3 +85,24 @@ def test_이미지_없이_켜져_있어도_깨지지_않는다(tmp_path):
     probe = next(r for r in _rows(out) if r["type"] == "probe")
     assert "image" not in probe
     assert probe["is_trail"] is True
+
+
+def test_런_헤더에_설정을_통째로_넣어도_직렬화된다(tmp_path):
+    """⚠️ 실측 회귀. `vars(cfg)` 로 넣었더니 런이 **첫 줄에서** 죽었다.
+
+    ExploreConfig.image 는 중첩 dataclass(ImageSettings)라 vars() 는 객체를
+    그대로 담고, RunLog 는 헤더를 쓰는 순간 TypeError 를 낸다 — 즉 진입점이
+    아예 안 떴다. 헤더는 "런로그만 보고 재현할 수 있어야 한다" 는 계약을
+    지는 자리이므로, 설정을 통째로 담는 것 자체는 유지하고 asdict 로 넣는다.
+    """
+    from dataclasses import asdict
+
+    from trailwalk import settings
+    from trailwalk.explore import ExploreConfig
+
+    cfg = ExploreConfig.from_settings(settings.load())
+    out = tmp_path / "r.jsonl"
+    with RunLog(out, {"config": asdict(cfg)}) as log:
+        _probe(log)
+    head = _rows(out)[0]
+    assert head["config"]["image"]["target_size"] == list(cfg.image.target_size)

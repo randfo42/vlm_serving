@@ -9,13 +9,13 @@
 
 **CLI 인자는 `--config` 하나뿐이다** (→ CLAUDE.md "설정").
 
-서버가 떠 있어야 한다. run_walk.py 와 같은 배선이고, 루프만 다르다:
-walk 는 한 길을 따라가고 explore 는 갈래를 전부 간다.
+서버가 떠 있어야 한다: ./configs/smoke.sh
 """
 import argparse
 import json
 import sys
 import time
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -63,7 +63,9 @@ def main() -> int:
     header = {"provider": prov.name, "mode": "explore", "schema": st.vlm.schema,
               "url": st.vlm.url,
               "start": [lat, lng], "start_bearing": bearing,
-              "config": vars(cfg),
+              # asdict 여야 한다 — cfg.image 는 중첩 dataclass 라 vars() 로는
+              # 객체가 그대로 들어가고 런로그 첫 줄에서 죽는다 (실제로 죽었다)
+              "config": asdict(cfg),
               # 어느 설정 파일로 돌았는지. 런로그만 보고 재현할 수 있어야 한다
               "config_path": str(Path(a.config).resolve() if a.config else settings.DEFAULT_PATH),
               "prompt": P.fingerprint(st.vlm.prompt_version)}

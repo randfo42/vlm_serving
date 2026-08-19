@@ -28,9 +28,6 @@ cd .. && ./configs/smoke.sh
 
 ```bash
 pip install -r app/requirements.txt
-python app/run_walk.py
-
-# 갈래를 전부 도는 분기 탐색은 이쪽 (docs/20-app-design.md §3.5)
 python app/run_explore.py
 ```
 
@@ -38,19 +35,27 @@ python app/run_explore.py
 
 ```bash
 cp app/config/trailwalk.yaml app/config/my.yaml   # start·예산·프롬프트를 고치고
-python app/run_walk.py --config app/config/my.yaml
+python app/run_explore.py --config app/config/my.yaml
 ```
 
 기대 출력:
 
 ```
-멈춘 이유: max_steps
-스텝 6 · VLM 호출 18 · 38s (2.08s/호출)
+멈춘 이유: call_budget
+노드 163 · 판정 200 (산책로 173) · VLM 호출 200 · 434s (2.15s/호출)
+
+예산에 걸려 못 간 갈래 39개:
+  d10 fx_37.569709_127.007428 → fx_37.569619_127.007388  [call_budget]
+  ...
 ```
 
-스텝보다 호출이 많은 것이 정상이다 — fixture 의 격자 그래프는 갈림길마다
-후보가 여러 개이고, 기본값이 "후보를 전부 묻기" 다.
-첫 성공에서 멈추려면 설정에서 `candidates.probe_all: false`.
+⚠️ **기본 설정으로 7분 걸린다.** fixture 의 격자 그래프는 사방이 이어져 있어
+예산을 다 쓴다 (`budget.max_vlm_calls: 200` × 2.2s). 배선만 확인하려면 그 값을
+줄여서 돌린다.
+
+노드보다 판정이 많은 것이 정상이다 — 갈림길마다 후보가 여러 개이고 후보
+하나하나가 별개 질문이다. 예산에 걸려 못 간 갈래는 버리지 않고 `frontier` 에
+남는다. 이어서 탐색할 때 그게 그대로 입력이다.
 
 첫 호출이 13초쯤 걸리면 정상이다 (콜드 스타트). `run.warmup: true` 로 측정 밖으로 뺀다.
 
@@ -69,7 +74,7 @@ playwright install chromium
 python app/check_kakao.py         # ← 먼저 이것. 진단 전용, VLM 불필요
 
 # 설정에서 provider: kakao, start: [37.5768, 127.0246], headed: true 로 고친 뒤
-python app/run_walk.py --config app/config/my.yaml
+python app/run_explore.py --config app/config/my.yaml
 ```
 
 `check_kakao.py` 는 서울 좌표 6곳(**차도 대조군 포함**)에서 pano 가 잡히는지,

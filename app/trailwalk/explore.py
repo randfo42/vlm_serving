@@ -1,13 +1,13 @@
 """분기 탐색 — 시작점에서 뻗는 산책로를 전부 그린다.
 
-walk.py 가 "한 길을 따라간다" 라면 여기는 "이 지점에서 갈 수 있는 산책로를
-전부 마킹한다" 다. 갈림길에서 하나를 고르는 대신 산책로로 판정된 갈래를
-**전부 큐에 넣고** 너비 우선으로 소비한다. walk.py 가 frontier 를 기록만
-하고 버리지 않았던 이유가 이것이다 (docs/23-open-questions.md §8).
+"이 지점에서 갈 수 있는 산책로를 전부 마킹한다" 가 하는 일이다. 갈림길에서
+하나를 고르는 대신 갈래를 **전부 큐에 넣고** 너비 우선으로 소비한다.
 
-VLM 에게 묻는 것은 walk 와 완전히 같다: "이 장면이 산책로인가" 하나.
-후보 생성(`_candidates`)도 두 루프가 같은 것을 쓴다 — 정의는 이 파일에
-있고 walk 가 여기서 가져간다. 판정 조건이 갈라지면 결과를 비교할 수 없다.
+한때 갈림길에서 하나만 따라가는 루프(walk)가 따로 있었고 나머지 갈래를
+frontier 에 기록만 했다. 그 "나머지" 를 실제로 가는 것이 여기이므로 walk 는
+이것의 부분집합이었다 — 2026-08-20 에 지웠다. 탐색 범위는 반경으로 정한다.
+
+VLM 에게 묻는 것은 하나다: "이 장면이 산책로인가".
 
 ### 예산은 depth 가 아니라 호출 수로 건다
 
@@ -62,7 +62,7 @@ from .vlm import ImageIgnoredError, ServerDeadError, VlmError
 class ExploreConfig:
     """탐색 정책. **기본값은 여기가 아니라 app/config/trailwalk.yaml 에 있다.**
 
-    walk.WalkConfig 와 같은 이유다 — 기본값을 코드에 다시 적으면 정본이 둘이 된다.
+    기본값을 코드에 다시 적으면 정본이 둘이 된다 (→ 루트 CLAUDE.md "설정").
     """
     max_vlm_calls: int
     max_depth: int
@@ -165,13 +165,13 @@ class _Node:
 def explore(provider, client, start: tuple[float, float], start_bearing: float = 0.0,
             cfg: ExploreConfig | None = None, log=None) -> ExploreResult:
     """start 에서 모든 방향으로 산책로 그래프를 넓힌다."""
-    # 기본 인자로 두면 인스턴스가 호출 간에 공유된다 (walk.py 와 같은 이유)
+    # 기본 인자로 ExploreConfig(...) 를 두면 인스턴스 하나가 호출 간에 공유된다
     cfg = cfg or ExploreConfig.from_settings(settings.SETTINGS)
     res = ExploreResult()
     t0 = time.time()
 
     def probe(p: Pano, hdg: float, depth: int) -> bool | None:
-        """한 방향을 물어본다. None 은 '판정 불가' (캡처 실패). walk.probe 와 같은 모양."""
+        """한 방향을 물어본다. None 은 '판정 불가' (캡처 실패)."""
         try:
             raw = provider.capture(p, hdg)
         except Exception as e:
@@ -237,7 +237,7 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
             res.frontier.append(leftover(node, "max_depth"))
             continue
 
-        # ── 후보 생성. walk 와 같은 코드 경로 — 판정 조건이 갈라지지 않게 ──
+        # ── 후보 생성 (이 파일 위쪽 _candidates) ──
         cands, loaded = _candidates(provider, node.pano, node.bearing,
                                     node.came_from, visited, cfg)
         if not loaded:

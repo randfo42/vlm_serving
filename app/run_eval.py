@@ -4,7 +4,7 @@
     python app/run_eval.py
     python app/run_eval.py --config app/config/eval_v1.yaml
 
-**CLI 인자는 `--config` 하나뿐이다** (run_walk.py 와 같은 규칙). 라벨 파일,
+**CLI 인자는 `--config` 하나뿐이다** (→ CLAUDE.md "설정"). 라벨 파일,
 출력 경로, 재개 여부는 설정의 `eval:` 구획에 있다.
 
 서버가 떠 있어야 한다: ./configs/smoke.sh

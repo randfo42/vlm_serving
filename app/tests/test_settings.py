@@ -10,7 +10,6 @@ import pytest
 
 from trailwalk import settings
 from trailwalk.explore import ExploreConfig
-from trailwalk.walk import WalkConfig
 
 
 def write(tmp_path, body: str):
@@ -32,19 +31,8 @@ def test_정본_파일이_실제로_읽힌다():
 def test_기본값을_코드에_다시_적지_않는다():
     """Config dataclass 에 기본값이 있으면 정본이 둘이 된다 — 어느 쪽이 먹는지
     코드를 읽어야 알게 되고, 그게 이 리팩터링이 없앤 문제다."""
-    for cls in (WalkConfig, ExploreConfig):
-        with pytest.raises(TypeError):
-            cls()          # 인자 없이 만들어지면 코드에 기본값이 있다는 뜻
-
-
-def test_두_루프가_같은_설정에서_같은_값을_받는다():
-    """max_candidates 가 walk 3 / explore 4 로 갈라져 있던 자리다."""
-    s = settings.load()
-    w, e = WalkConfig.from_settings(s), ExploreConfig.from_settings(s)
-    assert w.max_candidates == e.max_candidates
-    assert w.max_seconds == e.max_seconds
-    assert w.snap_radius_m == e.snap_radius_m
-    assert w.max_vlm_calls == e.max_vlm_calls   # 예산 축이 같다
+    with pytest.raises(TypeError):
+        ExploreConfig()    # 인자 없이 만들어지면 코드에 기본값이 있다는 뜻
 
 
 # ── 조용히 틀리지 않는다 ───────────────────────────────────────────────────
@@ -171,15 +159,15 @@ def test_화각과_이미지_크기가_한_값에서_나온다():
 # 통과시키고, 틀린 값이 런 내내 조용히 먹는다.
 
 def test_따옴표_친_no는_bool이_아니라_문자열이다(tmp_path):
-    """YAML 의 `"no"` 는 문자열이고 `if not probe_all:` 은 그걸 참으로 읽는다 —
+    """YAML 의 `"no"` 는 문자열이고 `if not resume:` 은 그걸 참으로 읽는다 —
     끄려던 옵션이 켜진 채로 런이 끝난다. 에러도 안 난다."""
     p = write(tmp_path, """
-        candidates:
-          probe_all: "no"
+        eval:
+          resume: "no"
     """)
     with pytest.raises(settings.SettingsError) as e:
         settings.load(p)
-    assert "probe_all" in str(e.value)
+    assert "resume" in str(e.value)
 
 
 def test_bool_자리에_숫자를_넣으면_터진다(tmp_path):
@@ -270,11 +258,10 @@ def test_커스텀_설정의_토큰_하한이_vlm에_먹는다(tmp_path):
 
 
 def test_루프_설정이_이미지_규칙을_들고_다닌다():
-    """WalkConfig/ExploreConfig 가 image 를 안 들고 있으면 probe() 가 모듈
-    상수로 인코딩하게 되고, 그 순간 --config 가 무시된다."""
+    """ExploreConfig 가 image 를 안 들고 있으면 probe() 가 모듈 상수로
+    인코딩하게 되고, 그 순간 --config 가 무시된다."""
     s = settings.load()
-    for cfg in (WalkConfig.from_settings(s), ExploreConfig.from_settings(s)):
-        assert cfg.image is s.image
+    assert ExploreConfig.from_settings(s).image is s.image
 
 
 def _decoded_size(data_uri: str):

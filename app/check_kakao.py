@@ -4,7 +4,7 @@
     python app/check_kakao.py             # headless
     python app/check_kakao.py --headed    # 브라우저를 띄워서
 
-`run_walk.py --provider kakao` 가 안 될 때 원인이 넷인데 겉으로는 전부
+설정의 `provider: kakao` 로 런이 안 될 때 원인이 넷인데 겉으로는 전부
 "안 된다" 로 똑같이 보인다 (app/docs/23-open-questions.md §1):
 
     1. 키 종류가 틀림 / 도메인 미등록  → SDK 가 로드조차 안 됨
