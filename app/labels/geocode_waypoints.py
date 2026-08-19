@@ -261,8 +261,18 @@ def main() -> int:
         # (실측: 전건 성공 요구 시 54/150, 2개 이상 요구 시 128/150).
         n_ok = sum(1 for r in rows if r["status"] != "missing")
         n_gu = sum(1 for r in rows if r.get("gu_found"))
+        pts = [(r["lat"], r["lng"]) for r in rows if r["status"] != "missing"]
+        chain_m = sum(haversine_m(x, y) for x, y in pairwise(pts))
+        km = course.get("distance_km") or 0
+        # 경유지 직선 연결이 공식 거리보다 **길 수는 없다** — 실제 걷는 길은
+        # 직선보다 길기 때문이다. 1.5배를 넘으면 좌표가 틀린 것이다.
+        # 실측: seoul-181 뚝섬 숲속길 10.44 (경유지가 "3번 출구로 나와 잠실대교
+        # 방향으로" 같은 **문장**이라 엉뚱한 POI 에 붙었다).
+        chain_bad = km and chain_m / (km * 1000) > 1.5
         if n_ok < 2:
             status = "incomplete"           # 구간을 만들 수 없다
+        elif chain_bad:
+            status = "suspect_geocode"
         elif n_ok and n_gu / n_ok > 0.5:
             # 절반 넘게 딴 자치구에 잡혔다 = 경유지 이름이 검색 가능한 POI 가
             # 아니다 (예: 문화비축기지의 "T1"~"T6"). 좌표를 믿을 수 없다.
@@ -271,10 +281,6 @@ def main() -> int:
             status = "ok"
         if status != "ok":
             n_incomplete += 1
-        # 경유지 직선 연결 길이 / 공식 거리 — 코스당 스칼라 하나로 훑는다
-        pts = [(r["lat"], r["lng"]) for r in rows if r["status"] != "missing"]
-        chain_m = sum(haversine_m(x, y) for x, y in pairwise(pts))
-        km = course.get("distance_km") or 0
         out_courses.append({"course_id": cid, "name": course["name"],
                             "gu": gu, "theme": course.get("theme"),
                             "status": status,
