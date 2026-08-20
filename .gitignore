@@ -43,3 +43,18 @@ vendor/llama.cpp/
 
 # macOS
 .DS_Store
+
+# 라벨 데이터 — 커밋하지 않는다. 이 저장소는 public 이고, 대장 자체는
+# labels/ 의 수집 스크립트로 재현 가능하다 (→ app/docs/22-labels.md §5).
+# 남기는 것은 "무엇을 어떻게 모았는가"(스크립트 + 문서)이지 모은 것이 아니다.
+app/labels/trails.json
+app/labels/*/*.json
+app/labels/*/*.jsonl
+app/labels/*/*.tsv
+app/labels/*/routes/
+# 예외: 사람이 손으로 넣은 좌표 보정. 어떤 스크립트로도 재생성되지 않는다
+# (POI 검색이 안 되는 지점마다 사람의 판단과 근거가 적혀 있다).
+!app/labels/*/overrides.json
+
+# Claude Code 가 만드는 워크트리 체크아웃. 같은 저장소의 사본이다.
+.claude/worktrees/
