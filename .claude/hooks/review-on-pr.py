@@ -248,6 +248,13 @@ def parse_pr(cmd: str, root: Path) -> tuple[str, str, str, str | None]:
                 # gh 는 stdin 에서 읽는다. 훅은 그 스트림을 볼 수 없다 —
                 # 읽어버리면 gh 가 받을 것이 없어진다. 사유를 정확히 남긴다.
                 return "", "", DEFAULT_BASE, "본문이 stdin 으로 들어온다"
+            if "$" in nxt or "`" in nxt:
+                # 셸이 펼칠 경로다(`--body-file $TMP/pr.md`). 훅은 명령을
+                # 실행하지 않으므로 펼칠 수 없고, 펼치겠다고 셸을 부르는 것은
+                # 훅이 할 일이 아니다. 그냥 두면 "파일이 없다" 로 남아서
+                # **검증이 안 돈 진짜 이유가 가려진다.** 실제로 이 훅을 넣는
+                # PR 이 그렇게 조용히 검증을 건너뛰었다.
+                return "", "", DEFAULT_BASE, f"경로에 셸 변수가 있다: {nxt}"
             # `~/pr.md` 는 절대경로가 아니어서 root 밑에서 찾다 실패했다.
             # 그러면 "파일이 없다" 는 메시지만 남고 원인은 안 보인다. (리뷰 advisory)
             f = Path(nxt).expanduser()
