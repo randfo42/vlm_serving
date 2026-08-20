@@ -44,6 +44,7 @@
 | `test_geo_providers.py` | 측지 왕복 · 격자 스냅 안정성 |
 | `test_config_secrets.py` | 키 값이 예외·진단 출력 어디에도 안 나온다 |
 | `test_review_hook.py` | 커밋 훅의 플래그 판정 · 응답 파싱 (§4) |
+| `test_review_on_pr.py` | PR 훅의 명령 파싱 — 본문·base 를 어디서 읽는가 (§4) |
 
 ### 브라우저·서버가 필요한 것은 일부러 뺐다
 
@@ -246,7 +247,8 @@ except Exception:
 가장 나쁜 실패다. 여러 줄 본문의 흔한 형태인 `--body "$(cat <<'EOF' … EOF)"` 는
 명령치환이라 `shlex` 가 풀지 못하므로, **실행하지 않고** 히어독 표식 사이만
 꺼낸다. `--body-file` · `--fill`(커밋 메시지를 본문으로 쓴다) · `--web`(브라우저에서
-쓰므로 건너뛴다)도 각각 다르게 다룬다. 이 부분만 `test-review-on-pr.py` 가 잰다.
+쓰므로 건너뛴다)도 각각 다르게 다룬다. 이 부분만 `app/tests/test_review_on_pr.py`
+가 잰다 — 커밋 훅과 같은 자리다(§2). 에이전트는 안 부른다: 느리고 비결정적이다.
 
 **훅이 자기 커밋에서 오발동했다 (2026-08-20).** 커밋 메시지에 "`gh pr create`
 를 가로챈다" 라고 적었더니, 그 글자가 명령 문자열에 그대로 들어오고 `shlex` 는
@@ -265,7 +267,6 @@ PR 검증이 돌았다. 그래서 **매칭은 히어독 본문을 지운 문자�
 |---|---|
 | `block-secret-reads.py` | `.env` 직접 읽기 차단. 자체 테스트 24개 (`test-block-secret-reads.sh`) |
 | `keycheck.py` | 어떤 키가 있는지 **값 없이** 확인 (이름·길이·sha256 앞 8자) |
-| `test-review-on-pr.py` | 위 PR 훅의 명령 파싱 시험. 에이전트는 안 부른다 |
 
 ---
 
