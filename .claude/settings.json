@@ -20,6 +20,12 @@
             "command": "/usr/bin/python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/review-on-commit.py\"",
             "statusMessage": "커밋 전 검사 (ruff · pytest · 리뷰 에이전트)",
             "timeout": 540
+          },
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/review-on-pr.py\"",
+            "statusMessage": "PR 본문 검증 (처음 보는 사람이 알 수 있는가)",
+            "timeout": 540
           }
         ]
       }
