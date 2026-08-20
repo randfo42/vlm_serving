@@ -37,6 +37,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+# 훅은 스크립트로 실행되므로 보통은 sys.path[0] 이 이 디렉터리다. 다만 테스트가
+# importlib 로 불러올 때는 아니라서, 어느 쪽에서든 되도록 직접 넣는다.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _shell import SEPARATORS, strip_heredocs
+
 # 재귀 방지. 리뷰 에이전트도 이 프로젝트 설정을 물려받으므로, 그 안에서 커밋을
 # 시도하면 또 리뷰가 돌 수 있다. 부모가 표식을 심고 자식은 그걸 보고 비켜난다.
 GUARD = "TRAILWALK_IN_REVIEW"
@@ -67,8 +72,6 @@ GIT_COMMIT = _git_cmd("commit")
 # 스테이징 명령. commit 과 한 명령에 묶였는지 볼 때 쓴다 (→ stages_before_commit).
 GIT_STAGE = _git_cmd("add|rm|mv")
 
-# 셸 명령 구분자. 이 뒤는 **다른 명령**이라 앞 명령의 플래그 판정에 섞이면 안 된다.
-SEPARATORS = (";", "&&", "||", "|", "&")
 # 실측(2026-08-17): 10KB diff → 230~290초. 도구를 전부 빼도 230초라 병목은 탐색이
 # 아니라 생성이다. 그래서 40KB 를 넘으면 리뷰를 건너뛴다 — 95KB 를 넣었더니 240초를
 # 통째로 태우고 결국 아무 결과도 못 냈다. 못 할 일이면 빨리 포기하는 편이 낫다.
@@ -402,7 +405,16 @@ def main() -> None:
 
     if data.get("tool_name") != "Bash":
         emit()
-    cmd = data.get("tool_input", {}).get("command", "") or ""
+    # 히어독 **본문**은 명령이 아니라 데이터다 (→ _shell.py). 지우지 않으면
+    # "이 훅은 git commit 을 가로챈다" 라고 적은 **무관한 명령**에서 정규식이
+    # 걸리고, commit_flags 가 그 산문을 플래그로 토큰화한 채 게이트가 돈다.
+    # 낭비로 끝나지 않는다 — 그 뒤 리뷰가 지금 스테이지된 diff 로 돌아서
+    # 관계없는 명령을 차단하고, 그 명령에 묶여 있던 git add 까지 함께 죽는다
+    # (PreToolUse 는 명령 **전체**를 막는다). 실제로 그렇게 당했다.
+    #
+    # 여기서 한 번만 지우고 아래는 전부 이걸 쓴다. 각 함수가 알아서 지우게
+    # 하면 한 곳만 빠진 상태가 생긴다.
+    cmd = strip_heredocs(data.get("tool_input", {}).get("command", "") or "")
     if not GIT_COMMIT.search(cmd):
         emit()
     if os.environ.get(GUARD):

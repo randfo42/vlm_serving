@@ -87,13 +87,21 @@ def test_표식과_같은_말이_본문에_있어도_흔들리지_않는다(hook
 # ── 건너뛸 때는 사유가 정확해야 한다 ─────────────────────────────────────────
 
 @pytest.mark.parametrize("cmd", [
-    'gh pr create --web -t T',            # 본문을 브라우저에서 쓴다
-    'gh pr create --title "T"',           # gh 가 에디터를 연다
-    'gh pr create -t T --body-file -',    # 본문이 stdin 으로 온다
+    'gh pr create --web -t T',                  # 본문을 브라우저에서 쓴다
+    'gh pr create --title "T"',                 # gh 가 에디터를 연다
+    'gh pr create -t T --body-file -',          # 본문이 stdin 으로 온다
+    'gh pr create -t T --body-file $S/pr.md',   # 셸이 펼칠 경로
 ])
 def test_검사할_본문이_없으면_건너뛴다(hook, cmd):
     _, _, _, skip = parse(hook, cmd)
     assert skip and skip != hook.SILENT
+
+
+def test_셸_변수_경로는_사유를_정확히_남긴다(hook):
+    # "파일이 없다" 로 남기면 검증이 안 돈 진짜 이유가 가려진다. 실제로 이
+    # 훅을 넣는 PR 이 그렇게 조용히 검증을 건너뛰었다.
+    _, _, _, skip = parse(hook, 'gh pr create -t T --body-file $S/pr.md')
+    assert "셸 변수" in skip
 
 
 # ── 명령이 아닌 것을 명령으로 읽지 않는다 ────────────────────────────────────

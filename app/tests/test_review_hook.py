@@ -326,3 +326,46 @@ def test_재귀_방지_표식이_있다(hook):
     """리뷰 에이전트도 이 프로젝트 설정을 물려받는다. 표식이 없으면 리뷰 안에서
     또 리뷰가 돌 수 있다."""
     assert hook.GUARD and hook.GUARD.isupper()
+
+
+# ── 히어독 본문은 명령이 아니라 데이터다 ────────────────────────────────────
+#
+# ⚠️ 이 훅이 무관한 명령에서 돌던 자리다. 커밋 메시지나 스크립트에 "이 훅은
+# git commit 을 가로챈다" 라고 적으면 그 글자가 command 문자열에 그대로
+# 들어오고, 정규식이 거기 걸린다. 낭비로 끝나지 않는다 — 그 뒤 리뷰가 지금
+# 스테이지된 diff 로 돌아서 **관계없는 명령을 차단**하고, PreToolUse 는 명령
+# 전체를 막으므로 같은 줄에 묶인 git add 까지 함께 죽는다.
+#
+# 판정은 전부 strip_heredocs 를 거친 문자열로 한다 (→ .claude/hooks/_shell.py).
+
+def test_히어독_본문의_언급은_커밋이_아니다(hook):
+    cmd = ("/usr/bin/python3 - <<'X'\n"
+           "# 이 훅은 git commit 을 가로챈다\n"
+           "print(1)\n"
+           "X")
+    assert hook.GIT_COMMIT.search(hook.strip_heredocs(cmd)) is None
+
+
+def test_히어독으로_메시지를_준_진짜_커밋은_그대로_읽는다(hook):
+    # 본문을 지워도 명령 부분은 남아야 한다. 여기까지 못 읽으면 반대 방향으로
+    # 틀린 것이다 — 진짜 커밋이 리뷰를 안 받는다.
+    cmd = ("git commit -F - <<'EOF'\n"
+           "제목\n\n"
+           "본문에 git commit --no-verify 라고 적었을 뿐이다\n"
+           "EOF")
+    stripped = hook.strip_heredocs(cmd)
+    assert hook.GIT_COMMIT.search(stripped) is not None
+    assert hook.commit_flags(stripped)[:4] == ["git", "commit", "-F", "-"]
+    # 본문의 --no-verify 가 플래그로 새면 리뷰가 통째로 건너뛰어진다
+    assert not hook.skips_verify(stripped)
+
+
+def test_히어독_뒤에_이어지는_진짜_커밋도_찾는다(hook):
+    # 본문을 안 지우면 첫 매치가 히어독 안이라 엉뚱한 줄에서 플래그를 읽는다.
+    cmd = ("cat > f <<'EOF'\n"
+           "git commit -m 가짜 --no-verify\n"
+           "EOF\n"
+           "git commit -m 진짜")
+    stripped = hook.strip_heredocs(cmd)
+    assert hook.commit_flags(stripped) == ["git", "commit", "-m", "진짜"]
+    assert not hook.skips_verify(stripped)
