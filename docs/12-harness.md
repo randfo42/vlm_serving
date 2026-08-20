@@ -4,7 +4,7 @@
 범위: 레포 전체 (`app/` + `bench/` + `.claude/hooks/`)
 
 ```bash
-.venv/bin/python -m pytest        # 206개 · 1초 미만 · 브라우저도 서버도 필요 없다
+.venv/bin/python -m pytest        # 343개 · 6초 · 브라우저도 서버도 필요 없다
 .venv/bin/ruff check .            # 린트
 .venv/bin/ruff check . --fix      # 자동 수정 가능한 것만
 ```
@@ -32,14 +32,18 @@
 
 ## 2. 테스트
 
-`app/tests/` · 206개 · 1초 미만. **브라우저도 VLM 서버도 띄우지 않는다.**
+`app/tests/` · 343개 · 6초 (2026-08-20). **브라우저도 VLM 서버도 띄우지 않는다.**
+
+그중 5초는 `test_kakao_settle.py` 의 `test_타일이_끝내_안_끊겨도_포기한다`
+하나다 — 실제 타임아웃이 걸리는지를 재느라 진짜로 기다린다. 나머지 342개는
+합쳐서 1초 남짓이다.
 
 | 파일 | 지키는 것 |
 |---|---|
 | `test_prompt.py` | 해시 핀 · 버전 선택 · 스키마 필드가 프롬프트에 정의돼 있는가 |
 | `test_imaging.py` | 무엇을 넣어도 JPEG · 고정 크기 · 늘리지 않고 자른다 |
 | `test_vlm.py` | 조용한 실패 감지 (이미지 무시 · 캐시 미스 · 500 연속 · 잘린 출력) |
-| `test_walk.py` | 온 길 제외 · 막다른 길이 폴백으로 새지 않음 · frontier |
+| `test_explore.py` | 온 길 제외 · 예산(시간·반경) · 못 간 갈래가 frontier 에 남는가 |
 | `test_kakao_settle.py` | 프레임 안정화 (이 레포에서 가장 비싸게 배운 버그) |
 | `test_geo_providers.py` | 측지 왕복 · 격자 스냅 안정성 |
 | `test_config_secrets.py` | 키 값이 예외·진단 출력 어디에도 안 나온다 |
@@ -52,12 +56,12 @@
 그쪽은 각자의 도구가 있다:
 
 - `app/check_kakao.py` — 키·도메인·커버리지·렌더를 갈라서 진단
-- `app/run_walk.py --provider fixture` — VLM 서버까지 포함한 전체 배선
-- 실제 walk 런 — 판정 품질. 이건 자동화할 수 없고 사람이 캡처를 봐야 한다
+- `app/run_explore.py` (기본 provider 가 fixture) — VLM 서버까지 포함한 전체 배선
+- 실제 탐색 런 — 판정 품질. 이건 자동화할 수 없고 사람이 캡처를 봐야 한다
 
 ### 판정 품질은 테스트하지 않는다
 
-`test_walk.py` 가 보는 것은 판정을 받은 **뒤의 행동**이다. "이 사진이 산책로인가"
+`test_explore.py` 가 보는 것은 판정을 받은 **뒤의 행동**이다. "이 사진이 산책로인가"
 가 맞았는지는 프롬프트 문제이고 `app/docs/23-open-questions.md` §5 의 영역이다.
 둘을 섞으면 둘 다 못 잰다.
 
@@ -76,7 +80,7 @@ ruff. `E W F I B UP SIM RUF`.
 
 의도적으로 끈 것들과 그 이유는 `pyproject.toml` 에 주석으로 붙어 있다.
 핵심은 **E702**(한 줄 세미콜론)다 — `res.stop_reason = "dead_end"; break` 는
-종료 이유를 탈출문 옆에 붙여 두는 관용구이고, 두 줄로 풀면 `walk.py` 의 종료
+종료 이유를 탈출문 옆에 붙여 두는 관용구이고, 두 줄로 풀면 `explore.py` 의 종료
 조건이 눈으로 안 잡힌다.
 
 > 린트는 울릴 때 진짜여야 쓸모가 있다. 안 그러면 사람이 규칙째로 무시한다.

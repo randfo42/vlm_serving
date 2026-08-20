@@ -68,6 +68,12 @@ def test_body_file_상대경로는_저장소_루트_기준(hook):
     assert "VLM_SERVING" in b
 
 
+def test_히어독이_아닌_본문은_그대로_둔다(hook):
+    # unwrap 은 `$(cat <<TAG … TAG)` 안쪽만 꺼내는 함수다. 평범한 본문을
+    # 건드리기 시작하면 본문이 소리 없이 달라진다.
+    assert hook.unwrap("그냥 본문") == "그냥 본문"
+
+
 def test_표식과_같은_말이_본문에_있어도_흔들리지_않는다(hook):
     # 히어독을 지운 자리의 표식이 평범한 단어였을 때, 본문에 그 단어가
     # 리터럴로 있으면 본문이 통째로 사라졌다. 그러면 "본문이 비어 있다" 로
@@ -117,6 +123,14 @@ def test_구분자_뒤의_플래그는_남의_것이다(hook):
     _, b, _, skip = parse(hook, 'gh pr create -t T -b 본문 && gh pr view --web')
     assert skip is None
     assert b == "본문"
+
+
+def test_구분자_뒤의_body가_본문을_덮어쓰지_않는다(hook):
+    # 위 케이스는 뒤 명령에 경쟁하는 -b 가 없어서 이쪽을 못 본다. 끊지 않으면
+    # 뒤 명령의 -b 가 이미 읽은 본문을 조용히 갈아치운다.
+    _, b, _, skip = parse(hook, 'gh pr create -t T -b 진짜본문 ; other -b 가짜본문')
+    assert skip is None
+    assert b == "진짜본문"
 
 
 def test_공백_없는_구분자도_끊는다(hook):
