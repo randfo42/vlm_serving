@@ -17,6 +17,8 @@ app/runs/images/
 # 이미지 바이트만 로컬에 둔다 — 재수집은 make_samples.py 로 재현 가능
 app/labels/*/images/
 app/labels/*/retired_v1_neg/
+# 검수용으로 하드링크만 모아 둔 폴더 (원본은 app/labels/<ds>/images/)
+app/labels/walk_only/
 # 코스 SVG 는 OSM 타일이 base64 로 박혀 장당 1~2MB 다. plot_course.py 로 재생성
 app/labels/*/svg/
 app/labels/.tilecache/

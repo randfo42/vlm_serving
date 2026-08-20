@@ -25,14 +25,7 @@ def _load_apply(tmp_path: Path):
         "apply_review", APP / "labels" / "apply_review.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    paths = mod.ds.DatasetPaths(
-        name="t", root=tmp_path,
-        courses=tmp_path / "courses.json", waypoints=tmp_path / "waypoints.json",
-        overrides=tmp_path / "overrides.json", routes_dir=tmp_path / "routes",
-        geom=tmp_path / "courses_geom.json", coverage=tmp_path / "coverage.json",
-        samples=tmp_path / "samples.jsonl", images=tmp_path / "images",
-        labels=tmp_path / "labels.jsonl", report=tmp_path / "r.tsv",
-        svg=tmp_path / "svg")
+    paths = mod.ds.at("t", tmp_path)
     mod.main = lambda: mod.run(paths)
     return mod
 

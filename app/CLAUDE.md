@@ -43,6 +43,7 @@ app/
     fetch_walk_routes.py   # 카카오 도보 길찾기 → 코스 폴리라인 (→ docs/24)
     probe_coverage.py      # 코스별 로드뷰 커버리지
     make_samples.py        # 폴리라인 리샘플 → pano 캡처 → samples.jsonl
+    pano_meta.py           # 캡처한 pano 의 shot_tool 조회 + 도보분 검수 폴더
     apply_review.py        # 사람 검수 결과 → labels.jsonl
     funnel.py              # 단계별 잔존 수 집계
     dataset.py             # 데이터셋 경로 한 곳 (jongno / seoul)

@@ -29,18 +29,20 @@ class DatasetPaths:
     geom: Path             # 구간 폴리라인
     coverage: Path         # 로드뷰 커버리지 프로브
     samples: Path          # 캡처 산출 대장
+    pano_meta: Path        # pano id → shot_tool 등 (캡처 후 조회)
     images: Path           # 이미지 (gitignore)
     labels: Path           # 검수 확정본
     report: Path           # 코스 단위 점검표 (TSV)
     svg: Path              # 코스 시각화 (gitignore)
 
 
-def resolve(name: str) -> DatasetPaths:
-    """데이터셋 이름 → 경로 묶음. 이름에 경로 구분자는 허용하지 않는다."""
-    if not name or "/" in name or "\\" in name or name.startswith("."):
-        raise ValueError(f"데이터셋 이름이 이상하다: {name!r} — "
-                         f"`app/labels/<이름>/` 의 <이름> 만 준다")
-    root = LABELS_ROOT / name
+def at(name: str, root: Path) -> DatasetPaths:
+    """임의의 루트에 데이터셋 경로를 만든다.
+
+    파일명 규칙이 **여기 한 곳에만** 있게 하려고 `resolve()` 와 테스트가 같이
+    쓴다. 테스트가 필드를 손으로 나열하면 필드가 늘 때마다 같이 고쳐야 하고,
+    빠뜨리면 테스트가 실제 경로 규칙과 다른 것을 검증하게 된다.
+    """
     return DatasetPaths(
         name=name, root=root,
         courses=root / "courses.json",
@@ -50,11 +52,20 @@ def resolve(name: str) -> DatasetPaths:
         geom=root / "courses_geom.json",
         coverage=root / "coverage.json",
         samples=root / "samples.jsonl",
+        pano_meta=root / "pano_meta.json",
         images=root / "images",
         labels=root / "labels.jsonl",
         report=root / "courses_report.tsv",
         svg=root / "svg",
     )
+
+
+def resolve(name: str) -> DatasetPaths:
+    """데이터셋 이름 → 경로 묶음. 이름에 경로 구분자는 허용하지 않는다."""
+    if not name or "/" in name or "\\" in name or name.startswith("."):
+        raise ValueError(f"데이터셋 이름이 이상하다: {name!r} — "
+                         f"`app/labels/<이름>/` 의 <이름> 만 준다")
+    return at(name, LABELS_ROOT / name)
 
 
 def add_argument(ap) -> None:
