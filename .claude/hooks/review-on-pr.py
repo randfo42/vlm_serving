@@ -44,6 +44,16 @@ import subprocess
 import sys
 from pathlib import Path
 
+# 훅은 스크립트로 실행되므로 보통은 sys.path[0] 이 이 디렉터리다. 다만 테스트가
+# importlib 로 불러올 때는 아니라서, 어느 쪽에서든 되도록 직접 넣는다.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _shell import (
+    HEREDOC_BODY,
+    SEPARATORS,
+    STRIPPED,
+    strip_heredocs,
+)
+
 # 재귀 방지. 검증 에이전트도 이 프로젝트 설정을 물려받는다.
 GUARD = "TRAILWALK_IN_PR_REVIEW"
 
@@ -60,29 +70,6 @@ DEFAULT_BASE = "main"
 
 MAX_DIFF_BYTES = 40_000
 
-# 히어독 본문 `<<'TAG' … TAG`. **명령이 아니라 데이터**다.
-# 커밋 메시지에 "gh pr create 를 가로챈다" 라고 적으면 그 글자가 명령 문자열에
-# 그대로 들어오고, shlex 는 히어독을 모르므로 gh·pr·create 를 각각 토큰으로
-# 쪼갠다 — 무관한 커밋마다 PR 검증이 돈다. 이 훅이 자기 커밋에서 오발동해서
-# 발견했다. 매칭은 본문을 지운 문자열로 하고, 본문 추출은 원본에서 한다.
-HEREDOC_BODY = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?\s*\n.*?\n\1(?=\s|$)",
-                          re.DOTALL)
-
-
-# 지운 자리에 남기는 표식. **평범한 단어를 쓰면 안 된다** — 본문에 그 단어가
-# 리터럴로 들어 있으면 히어독이 없는데도 있다고 판단해 본문이 빈 문자열이 되고,
-# "본문이 비어 있다" 로 검증이 조용히 건너뛰어진다. 하필 이 훅을 설명하는 PR 이
-# 그런 본문을 갖는다. NUL 은 셸 명령 문자열에 들어올 수 없다. (리뷰 에이전트 지적)
-STRIPPED = "\0heredoc\0"
-
-
-def strip_heredocs(cmd: str) -> str:
-    return HEREDOC_BODY.sub("<<" + STRIPPED, cmd)
-
-
-# 셸 명령 구분자. 이 뒤는 **다른 명령**이라 이 명령의 플래그로 세면 안 된다
-# (→ review-on-commit.py 의 _cut_at_separator 도 같은 이유로 있다).
-SEPARATORS = (";", "&&", "||", "|", "&")
 AGENT_TIMEOUT_S = 480
 
 PROMPT = """\
