@@ -89,6 +89,12 @@ check("값 없는 전역 옵션이 껴도", 'gh --verbose pr create -t T -b 본�
 
 check("--web 은 건너뛴다", 'gh pr create --web -t T', skip=True)
 check("본문 없으면 건너뛴다", 'gh pr create --title "T"', skip=True)
+# stdin 은 훅이 볼 수 없다 (읽으면 gh 가 받을 것이 없어진다). 건너뛰되 사유는
+# 정확해야 한다 — "파일이 없다" 로 남으면 원인을 못 찾는다.
+check("--body-file - 은 stdin", 'gh pr create -t T --body-file -', skip=True)
+
+# 저장소 안의 파일을 본문으로 주는 형태. 상대경로는 저장소 루트 기준이다.
+check("--body-file 상대경로", 'gh pr create -t T -F CLAUDE.md', body="VLM_SERVING")
 
 # 구분자 뒤는 다른 명령이다. 여기 넘어가면 뒤쪽 --web 을 보고 이미 읽은 본문을
 # 버린 채 건너뛴다 — 생성하고 바로 브라우저로 여는 흔한 형태에서 검증이 통째로

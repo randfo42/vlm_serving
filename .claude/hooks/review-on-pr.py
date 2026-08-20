@@ -257,9 +257,15 @@ def parse_pr(cmd: str, root: Path) -> tuple[str, str, str, str | None]:
             v = t.split("=", 1)[1]
             body = heredoc_from(cmd) if STRIPPED in v else unwrap(v)
         elif t in ("--body-file", "-F"):
+            if nxt == "-":
+                # gh 는 stdin 에서 읽는다. 훅은 그 스트림을 볼 수 없다 —
+                # 읽어버리면 gh 가 받을 것이 없어진다. 사유를 정확히 남긴다.
+                return "", "", DEFAULT_BASE, "본문이 stdin 으로 들어온다"
+            # `~/pr.md` 는 절대경로가 아니어서 root 밑에서 찾다 실패했다.
+            # 그러면 "파일이 없다" 는 메시지만 남고 원인은 안 보인다. (리뷰 advisory)
+            f = Path(nxt).expanduser()
             try:
-                body = (root / nxt).read_text(encoding="utf-8") if not \
-                    Path(nxt).is_absolute() else Path(nxt).read_text(encoding="utf-8")
+                body = (f if f.is_absolute() else root / f).read_text(encoding="utf-8")
             except OSError as e:
                 return "", "", DEFAULT_BASE, f"--body-file 을 읽지 못했다: {e}"
 
