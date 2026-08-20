@@ -175,3 +175,59 @@ def test_pick_arrow_heading_selects_nearest_arrow():
     # 0/360 랩
     arrow, diff = ms.pick_arrow_heading(5.0, [350.0, 180.0])
     assert arrow == 350.0 and diff == pytest.approx(15.0)
+
+
+# ── pano_meta: 도보 판정과 검수 폴더 ──────────────────────────────────────
+
+def test_is_walk_is_complement_of_car_tools():
+    """카카오 isWalk 와 같다 — 차량 3종의 여집합. 화이트리스트가 아니다."""
+    from labels.pano_meta import CAR_TOOLS, is_walk
+    assert {"102", "200", "202"} == CAR_TOOLS
+    for car in CAR_TOOLS:
+        assert not is_walk(car)
+    for walk in ("100", "101", "103", "201", "205"):
+        assert is_walk(walk)
+
+
+def test_is_walk_treats_unknown_codes_as_walk():
+    """새 코드가 생겨도 카카오와 같은 쪽으로 틀린다 — 조용히 반대로 가지 않는다."""
+    from labels.pano_meta import is_walk
+    assert is_walk("999")
+    assert is_walk(None)
+
+
+def test_is_walk_coerces_numeric_shot_tool():
+    """응답이 숫자 102 로 와도 차량이다 — 안 그러면 차량 전체가 조용히 도보가 된다."""
+    from labels.pano_meta import is_walk
+    assert not is_walk(102)
+    assert not is_walk("102")
+    assert is_walk(100)
+
+
+def _walk_sample(tmp_path, sid, cid, folder):
+    """캡처 시점 경로는 pos/ 인데 검수가 다른 폴더로 옮긴 상황을 만든다."""
+    d = tmp_path / "images" / cid / folder
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{sid}_999_090.0_T.png").write_bytes(b"png")
+    return {"type": "sample", "sample_id": sid, "course_id": cid, "label": True,
+            "label_source": "route", "pano_id": "999", "lat": 37.5, "lng": 127.0,
+            "heading": 90.0, "image": f"{cid}/pos/{sid}_999_090.0_T.png"}
+
+
+def test_find_image_follows_review_moves(tmp_path):
+    """검수가 discard/ 로 옮겨도 찾는다 — samples.jsonl 의 경로를 믿지 않는다."""
+    from labels import dataset
+    from labels.pano_meta import find_image
+    paths = dataset.at("t", tmp_path)
+    row = _walk_sample(tmp_path, "s-000p", "c-01", "discard")
+    found = find_image(paths, row)
+    assert found is not None, "옮겨진 이미지를 못 찾았다"
+    assert found.parent.name == "discard"
+
+
+def test_find_image_returns_none_when_absent(tmp_path):
+    from labels import dataset
+    from labels.pano_meta import find_image
+    paths = dataset.at("t", tmp_path)
+    (tmp_path / "images" / "c-01").mkdir(parents=True)
+    assert find_image(paths, {"course_id": "c-01", "sample_id": "s-000p"}) is None

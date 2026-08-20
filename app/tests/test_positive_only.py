@@ -147,13 +147,7 @@ class FakeProvider:
 
 
 def _collect(tmp_path, provider, course=None, cfg=Cfg):
-    dp = dataset.DatasetPaths(
-        name="t", root=tmp_path, courses=tmp_path / "c.json",
-        waypoints=tmp_path / "w.json", overrides=tmp_path / "o.json",
-        routes_dir=tmp_path / "routes", geom=tmp_path / "g.json",
-        coverage=tmp_path / "cov.json", samples=tmp_path / "s.jsonl",
-        images=tmp_path / "images", labels=tmp_path / "l.jsonl",
-        report=tmp_path / "r.tsv", svg=tmp_path / "svg")
+    dp = dataset.at("t", tmp_path)
     c = course or _course()
     (dp.images / c["course_id"] / "pos").mkdir(parents=True, exist_ok=True)
     col = ms.Collector(lambda: provider, dp, cfg, lambda m: None)
