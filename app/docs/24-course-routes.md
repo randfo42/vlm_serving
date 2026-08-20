@@ -44,6 +44,47 @@ Referer: https://map.kakao.com/          ← 없으면 302. 이것만 있으면 
   도착 가이드는 `link` 가 없다. 링크 경계에 중복점이 있어 제거한다.
 - 실패 시 `resultCode != "SUCCESS"` — 파서가 ValueError 로 터뜨린다.
 
+### 3.1 폴리라인 말고도 쓰는 것이 있다 (2026-08-20)
+
+`sections[]` 과 `guideList[].link` 에 **보행로 여부를 말해 주는 필드**가 있다.
+호출은 이미 하고 있으니 **추가 비용 0** 이다.
+
+| 필드 | 위치 | 값 | 쓸모 |
+|---|---|---|---|
+| `existCenterLine` | `link` | `true`/`false` | **중앙선이 있으면 차도다** |
+| `facilities` | `section` | `{stair, underground, bridge}` | 계단이 있으면 차가 못 간다 |
+| `guideMent` | `guideList[]` | `"계단이용"` `"징검다리로 횡단"` `"교량 진입"` `"횡단보도 이용"` | 구간 성격 |
+| `calories` | `section` | `"133"` | (거리의 함수로 보임 — 미확인) |
+| `length` `time` | `link` / `section` | m / s | 구간 속도 = 지형 난이도 추정 |
+
+캐시된 372개 라우트 집계:
+
+```
+링크 7,697개   existCenterLine: false 4,614 · true 3,083   → 개수 기준 중앙선 40.1%
+길이 합       false 842,438m · true 555,845m               → 길이 기준 중앙선 39.8%
+facilities 가 0 이 아닌 section 146개 — stair 102 · underground 49 · bridge 20
+guideMent  '횡단보도 이용' 208 · '교량 진입' 162 · '계단이용' 93 · '징검다리로 횡단' 15
+```
+
+**`existCenterLine` 이 실제로 촬영 계열을 가른다.** 샘플 814건을 최근접 링크
+(40m 이내)에 붙여 교차집계했다:
+
+| `existCenterLine` | 도보 pano | 차량 pano | 도보 비율 |
+|---|---:|---:|---:|
+| `true` | 11 | 314 | **3%** |
+| `false` | 159 | 330 | **33%** |
+
+중앙선이 있는 링크 위에서는 도보 파노가 사실상 없다. 이 게이트는
+**라우팅 시점에 걸 수 있다** — 로드뷰를 한 번도 부르지 않고, 폴리라인에서
+차도 구간을 잘라낼 수 있다는 뜻이다. 325건(40%)이 걸리고 그중 314건이 차량이다.
+
+`shot_tool` 필터와 역할이 다르다:
+
+- `existCenterLine` — **라우팅 결과를 자를 때**. 공짜. 라우터가 차도로 우회한
+  구간 자체를 없앤다
+- `shot_tool` — **스냅한 pano 를 버릴 때**. 반경 검색 1회. 남은 구간에서 잘못된
+  pano 에 붙는 걸 막는다
+
 ## 4. 좌표계 — WCongnamul
 
 요청·응답 모두 WCongnamul: **EPSG:5181(TM 중부원점 — lat0 38, lon0 127, k0 1,
