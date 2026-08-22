@@ -14,6 +14,7 @@
 app/
   run_explore.py         # CLI 진입점 — 시작점에서 뻗는 산책로를 전부 마킹 (BFS)
   run_eval.py            # CLI 진입점 — 라벨 세트로 정확도를 잰다
+  run_collect.py         # CLI 진입점 — explore 와 같은 순서로 캡처만 모은다 (VLM 없이)
   check_kakao.py         # 진단 — 로드뷰가 잡히고 실제로 그려지는지 (VLM 불필요)
   check_fov.py           # 진단 — 화각·화살표 측정 (VLM 불필요)
 

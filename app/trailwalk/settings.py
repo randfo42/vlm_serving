@@ -83,6 +83,12 @@ class VlmSettings:
 
 
 @dataclass(frozen=True)
+class CollectSettings:
+    max_views: int
+    out_dir: str
+
+
+@dataclass(frozen=True)
 class ImageSettings:
     target_size: tuple[int, int]
     expected_image_tokens: int
@@ -149,6 +155,7 @@ class Settings:
     candidates: CandidateSettings
     geo: GeoSettings
     vlm: VlmSettings
+    collect: CollectSettings
     image: ImageSettings
     kakao: KakaoSettings
     fixture: FixtureSettings

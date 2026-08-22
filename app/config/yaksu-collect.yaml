@@ -1,0 +1,28 @@
+# 약수역 캡처 수집 — VLM 성능 측정용 이미지 1000장
+#
+#     python app/run_collect.py --config app/config/yaksu-collect.yaml
+#
+# VLM 서버가 필요 없다. 여기 없는 값은 전부 정본(app/config/trailwalk.yaml)에서 온다.
+#
+# 왜 모으나: 2026-08-22 약수역 500m explore 실측에서 2.40s/판정 중 서버
+# inference 2.10s 가 캡처 뒤에 숨어 사라졌다. 캡처가 병목이라 그 상태로는
+# VLM 을 잴 수 없다 — 재는 것이 Playwright 가 된다. 그래서 먼저 떠 둔다.
+
+run:
+  provider: kakao          # 실제 로드뷰. VLM 부하를 재는 것이 목적이라 fixture 로는 의미가 없다
+  start: [37.5547937, 127.0106427]   # 약수역사거리 — 2026-08-22 explore 런과 같은 시작점
+  bearing: 0.0
+  save_images: false       # 이 스크립트는 런로그를 안 쓴다. collect.out_dir 로 나간다
+
+budget:
+  # 반경도 같은 런과 맞춘다 — 여기서 모은 것이 그 explore 가 보낸 것의
+  # 앞부분(1000장)과 같아야 비교가 성립한다
+  max_distance_m: 500.0
+
+  # 실측 2.4s/장 × 1000 ≈ 40분. 두 배 여유를 둔다 — 여기 걸리면 캡처가
+  # 병적으로 느려진 것이고, 그때는 1000장을 못 채운 채로 끝나는 게 맞다
+  max_seconds: 5400.0
+
+collect:
+  max_views: 1000
+  out_dir: "app/runs/images/yaksu-1000"
