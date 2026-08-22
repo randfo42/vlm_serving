@@ -29,7 +29,7 @@ cd .. && ./configs/smoke.sh
 ```bash
 pip install -r app/requirements.txt
 
-# 배선만 확인할 때는 반경을 줄인다 — 기본 1000m 는 fixture 격자에서 30분짜리다
+# 배선만 확인할 때는 반경을 줄인다 — 기본 반경은 fixture 격자에서 30분짜리다
 cp app/config/trailwalk.yaml app/config/smoke.yaml   # budget.max_distance_m: 30.0
 python app/run_explore.py --config app/config/smoke.yaml
 ```
@@ -59,8 +59,8 @@ python app/run_explore.py --config app/config/my.yaml
 노드 = 판정 + 1 이 된다 — 시작 노드만 판정 없이 들어가고, 이미 본 pano 는
 후보에서 미리 빠져 판정이 낭비되지 않는다.
 
-⚠️ **기본 반경 1000m 로 돌리면 30분 걸린다.** fixture 는 10m 격자 이웃을
-무한히 주므로 반경 안 노드가 3만 개 수준이고, `budget.max_seconds`(1800s)가
+⚠️ **기본 반경으로 돌리면 30분 걸린다.** fixture 는 10m 격자 이웃을
+무한히 주므로 반경 안 노드가 3만 개 수준이고, `budget.max_seconds` 가
 먼저 걸린다. 실제 로드뷰는 길이 있는 곳에만 pano 가 있어 훨씬 적다.
 
 첫 호출이 13초쯤 걸리면 정상이다 (콜드 스타트). `run.warmup: true` 로 측정 밖으로 뺀다.

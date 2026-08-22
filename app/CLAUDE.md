@@ -50,6 +50,7 @@ app/
     dataset.py             # 데이터셋 경로 한 곳 (jongno / seoul)
     trails.json
     <데이터셋>/            # courses·waypoints·routes·samples·labels·images·svg
+    walk_only/             # 도보 촬영분 하드링크 검수 폴더 (gitignore)
 
   eval/
     report_eval.py       # run_eval 산출물 → 정확도 리포트
