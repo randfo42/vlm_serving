@@ -167,7 +167,10 @@ class VlmClient:
     def _parse(self, payload: dict, ms: float) -> Verdict | None:
         usage = payload.get("usage", {})
         pt = usage.get("prompt_tokens", 0)
-        cached = usage.get("prompt_tokens_details", {}).get("cached_tokens", 0)
+        # ⚠️ vLLM 은 이 키를 `null` 로 **명시해서** 보낸다. `.get(key, {})` 의
+        # 기본값은 키가 **없을 때만** 먹으므로 None 이 그대로 나와 터진다.
+        # llama.cpp 는 키를 아예 빼서 이 경로가 드러나지 않았다 (2026-08-22).
+        cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
 
         # ── 이 순서가 중요하다: 내용을 보기 전에 이미지가 들어갔는지 먼저 본다.
         # 이미지가 무시되면 모델은 그럴듯한 JSON 을 만들어낸다. 파싱은 성공하고

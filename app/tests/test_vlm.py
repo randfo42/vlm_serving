@@ -108,6 +108,26 @@ def test_첫_호출의_캐시미스는_세지_않는다():
     assert c.stats.cache_misses == 1
 
 
+def test_캐시정보가_null이어도_판정이_나온다():
+    """vLLM 은 `prompt_tokens_details` 를 **`null` 로 명시해서** 보낸다.
+    `.get(key, {})` 의 기본값은 키가 없을 때만 먹으므로 None 이 그대로 흘러
+    `None.get()` 으로 터졌다 — llama.cpp 는 키를 아예 빼서 안 드러났다.
+    서버가 캐시 정보를 안 주는 것은 판정을 못 쓸 이유가 아니다."""
+    payload = ok_payload()
+    payload["usage"]["prompt_tokens_details"] = None
+    c, _ = client(payload)
+    v = c.assess(URI)
+    assert v.is_trail is True
+    assert v.cached_tokens == 0
+
+
+def test_usage에_캐시_키가_아예_없어도_판정이_나온다():
+    payload = ok_payload()
+    del payload["usage"]["prompt_tokens_details"]
+    c, _ = client(payload)
+    assert c.assess(URI).cached_tokens == 0
+
+
 def test_temperature는_0이고_스키마가_강제된다():
     c, fake = client(ok_payload())
     c.assess(URI)
