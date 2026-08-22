@@ -79,6 +79,13 @@ class VlmSettings:
     max_tokens: int
     timeout_s: int
     fatal_500_streak: int
+    max_inflight: int
+
+
+@dataclass(frozen=True)
+class CollectSettings:
+    max_views: int
+    out_dir: str
 
 
 @dataclass(frozen=True)
@@ -148,6 +155,7 @@ class Settings:
     candidates: CandidateSettings
     geo: GeoSettings
     vlm: VlmSettings
+    collect: CollectSettings
     image: ImageSettings
     kakao: KakaoSettings
     fixture: FixtureSettings

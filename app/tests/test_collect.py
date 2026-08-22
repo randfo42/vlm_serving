@@ -1,0 +1,188 @@
+"""캡처만 모으기 — explore 와 **같은 순서로 같은 화각**을 찍는가.
+
+이 파일이 지키는 것은 하나다: `run_collect.walk` 가 내는 (지점, 방위) 순열이
+같은 설정의 `explore` 가 서버로 보내는 것과 정확히 같다는 것.
+
+그게 깨지면 모아 둔 이미지로 VLM 을 재도 explore 의 부하를 잰 것이 아니게
+된다 — 다른 장면 다발을 잰 것이다. 그런데도 숫자는 그럴듯하게 나오므로
+사람이 알아챌 방법이 없다. 그래서 테스트가 본다.
+
+같을 수 있는 근거는 explore 쪽 성질이다: 판정값이 확장 여부도 큐 순서도
+바꾸지 않는다 (→ explore.py "아님 판정도 확장한다", "큐는 하나다").
+그 성질이 깨지면 이 테스트가 먼저 터진다.
+"""
+import importlib.util
+import math
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+
+from conftest import Client, Provider, nb
+from trailwalk import geo, settings
+from trailwalk.explore import ExploreConfig, explore
+
+APP = Path(__file__).resolve().parent.parent
+
+_M_PER_DEG = geo.R * math.pi / 180
+
+
+def north(m: float, base: float = 37.5) -> float:
+    return base + m / _M_PER_DEG
+
+
+def _load():
+    """run_collect.py 는 스크립트라 import 되지 않는다 (→ app/CLAUDE.md 파일 구조).
+    run_eval 을 테스트하는 방식과 같다."""
+    spec = importlib.util.spec_from_file_location("run_collect", APP / "run_collect.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _cfg(**over):
+    """정본에서 출발해 인자로 준 것만 덮는다 — 테스트가 자기 기본값을 갖지 않게."""
+    return replace(ExploreConfig.from_settings(settings.SETTINGS), **over)
+
+
+def _graph():
+    """갈림길이 있고, 되돌아오는 마름모가 있고, 막다른 길이 있는 그래프."""
+    return {
+        "S": [nb("A", 0.0, north(10)), nb("B", 90.0, 37.5, 127.001),
+              nb("C", 180.0, north(-10))],
+        "A": [nb("S", 180.0), nb("D", 0.0, north(20)), nb("E", 45.0, north(20), 127.001)],
+        "B": [nb("S", 270.0), nb("D", 350.0, north(20))],     # 마름모 — D 로 다시 온다
+        "C": [nb("S", 0.0)],                                   # 막다른 길
+        "D": [nb("A", 180.0), nb("F", 0.0, north(30))],
+        "E": [nb("A", 225.0)],
+        "F": [nb("D", 180.0)],
+    }
+
+
+def _collected(provider, cfg, max_views, bearing=0.0):
+    """walk 가 밟는 (지점, 방위) 를 순서대로."""
+    mod = _load()
+    seen = []
+
+    def on_view(pano, hdg, n, depth):
+        seen.append((pano.pano_id, round(hdg, 1)))
+        return True
+
+    r = mod.walk(provider, cfg, provider.start, bearing, max_views,
+                 on_view, deadline=float("inf"))
+    return seen, r
+
+
+def test_explore_와_같은_순서로_같은_화각을_찍는다():
+    cfg = _cfg(max_distance_m=1000.0, max_inflight=1000)
+
+    ex_prov = Provider(_graph())
+    # 판정을 섞어 준다 — 판정값이 순서를 바꾸지 않는다는 것이 요점이라
+    # 전부 True 나 전부 False 로 두면 그 사실을 확인하지 못한다
+    verdicts = {("S", 0.0): True, ("S", 90.0): False, ("A", 0.0): True,
+                ("A", 45.0): False, ("B", 350.0): True, ("D", 0.0): False}
+    res = explore(ex_prov, Client(ex_prov, verdicts), (37.5, 127.0), 0.0, cfg)
+    expected = [(p["from_pano"], p["heading"]) for p in res.probes]
+
+    got, r = _collected(Provider(_graph()), cfg, max_views=10_000)
+
+    assert got == expected
+    assert r["views"] == len(expected)
+    assert r["stop"] == "exhausted"
+
+
+def test_판정이_전부_뒤집혀도_같은_것을_찍는다():
+    """explore 를 두 번 돌린다 — 판정만 정반대로.
+
+    둘의 probes 가 같아야 "판정은 탐색을 안 바꾼다" 가 사실이고, 그래야
+    VLM 없이 찍은 것이 explore 와 같다고 말할 수 있다.
+    """
+    cfg = _cfg(max_distance_m=1000.0, max_inflight=1000)
+    keys = [("S", 0.0), ("S", 90.0), ("S", 180.0), ("A", 0.0), ("A", 45.0),
+            ("B", 350.0), ("D", 0.0)]
+
+    def probes(verdicts):
+        p = Provider(_graph())
+        res = explore(p, Client(p, verdicts), (37.5, 127.0), 0.0, cfg)
+        return [(x["from_pano"], x["heading"]) for x in res.probes]
+
+    all_true = probes(dict.fromkeys(keys, True))
+    all_false = probes(dict.fromkeys(keys, False))
+    assert all_true == all_false
+
+    got, _ = _collected(Provider(_graph()), cfg, max_views=10_000)
+    assert got == all_true
+
+
+def test_max_views_에서_정확히_멈춘다():
+    cfg = _cfg(max_distance_m=1000.0)
+    got, r = _collected(Provider(_graph()), cfg, max_views=4)
+    assert len(got) == 4
+    assert r["views"] == 4
+    assert r["stop"] == "max_views"
+
+
+def test_max_views_는_노드_경계가_아니라_후보마다_걸린다():
+    """시작 지점의 후보가 3개인데 2장에서 끊으면 2장이어야 한다.
+
+    노드 경계에서만 봤다면 3장이 나온다 — 한 지점이 최대 max_candidates
+    장이라 그 차이가 12장까지 벌어진다.
+    """
+    cfg = _cfg(max_distance_m=1000.0)
+    got, _ = _collected(Provider(_graph()), cfg, max_views=2)
+    assert got == [("S", 0.0), ("S", 90.0)]
+
+
+def test_반경은_찍는_지점을_자른다_목표가_아니라():
+    """반경 밖 노드는 **확장하지 않는다** — 찍는 자리(source)가 잘리는 것이지
+    목표(to_pano)가 걸리는 게 아니다. explore 와 같은 규칙이다.
+
+    반경 15m 에서 확장되는 것은 S(0m)·A(10m)·C(10m) 뿐이다. B 는 동쪽 88m 라
+    밖이고, A 에서 뻗은 D(20m)·E 도 밖이라 목표로만 찍히고 확장은 안 된다.
+    """
+    cfg = _cfg(max_distance_m=15.0)
+    got, _ = _collected(Provider(_graph()), cfg, max_views=10_000)
+
+    # 찍은 자리는 반경 안 노드뿐이다 (C 는 이웃이 온 길뿐이라 후보가 없다)
+    assert {p for p, _ in got} == {"S", "A"}
+    # 목표는 반경 밖도 들어온다 — B(88m)·D(20m) 는 to_pano 로 찍힌다
+    assert ("S", 90.0) in got and ("A", 0.0) in got
+    # 그러나 그 밖 노드에서 다시 뻗지는 않는다
+    assert ("D", 0.0) not in got and ("B", 350.0) not in got
+
+
+def test_이웃을_못_얻으면_지어내지_않는다():
+    """빈 이웃 목록은 '길 끝' 이 아니라 '로드 실패' 다 — 세고 넘어간다."""
+    cfg = _cfg(max_distance_m=1000.0)
+    got, r = _collected(Provider({"S": []}), cfg, max_views=10_000)
+    assert got == []
+    assert r["neighbors_missing"] == 1
+    assert r["views"] == 0
+
+
+def test_캡처_실패한_갈래는_확장하지_않는다():
+    """판정이 없으면 그 갈래를 밟은 것이 아니다 — explore 도 그렇게 한다."""
+    cfg = _cfg(max_distance_m=1000.0)
+    mod = _load()
+    prov = Provider(_graph())
+    seen = []
+
+    def on_view(pano, hdg, n, depth):
+        seen.append((pano.pano_id, round(hdg, 1)))
+        return pano.pano_id != "S"      # 시작 지점 캡처가 전부 실패한다
+
+    r = mod.walk(prov, cfg, prov.start, 0.0, 10_000, on_view, deadline=float("inf"))
+    # S 의 후보 3개를 시도하고 전부 실패했으므로 큐가 비어 끝난다
+    assert seen == [("S", 0.0), ("S", 90.0), ("S", 180.0)]
+    assert r["capture_failed"] == 3
+    assert r["views"] == 0
+    assert r["stop"] == "exhausted"
+
+
+@pytest.mark.parametrize("max_views", [1, 3, 5, 8, 10_000])
+def test_몇_장에서_끊든_앞부분은_같다(max_views):
+    """max_views 는 자르기만 한다 — 순서를 바꾸지 않는다."""
+    cfg = _cfg(max_distance_m=1000.0)
+    full, _ = _collected(Provider(_graph()), cfg, max_views=10_000)
+    got, _ = _collected(Provider(_graph()), cfg, max_views=max_views)
+    assert got == full[:len(got)]

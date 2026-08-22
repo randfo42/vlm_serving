@@ -9,6 +9,11 @@ data/images/
 # 애플리케이션 런로그. 실행마다 쌓이고 재현 가능하다.
 # 보존할 런은 app/runs/keep/ 로 옮긴다.
 app/runs/*.jsonl
+# 런 덤프와 거기서 그린 SVG 도 같다. eval/plot_explore.py 로 재생성한다 —
+# 덤프에는 수집한 pano_id·좌표가 그대로 들어 있고(이 저장소는 public 이다),
+# 지도 SVG 는 OSM 타일이 base64 로 박혀 장당 1MB 에 가깝다.
+app/runs/*.json
+app/runs/*.svg
 
 # 지도 API 로 받은 이미지는 커밋하지 않는다. 사업자 약관상 이미지 캐싱이
 # 회색지대다 → app/docs/23-open-questions.md §2

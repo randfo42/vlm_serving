@@ -51,11 +51,35 @@ depth 를 따르지 않아 **"너비 우선" 이 더는 사실이 아니게 된�
 
 지금은 발견 순서 그대로 FIFO 로 소비한다. 판정은 큐의 순서를 바꾸지
 않는다. 차도로 새는 것은 반경이 막는다.
+
+### 캡처와 VLM 을 겹친다 (2026-08-22)
+
+판정 하나 = 캡처 대기 + VLM 대기이고, 실측에서 그 둘이 반반이었다. 그래서
+캡처한 즉시 서버로 띄우고 **답을 기다리지 않은 채 다음 캡처로 간다.**
+
+겹칠 수 있는 이유는 바로 위의 두 성질이다 — 판정값은 확장 여부도 큐 순서도
+바꾸지 않는다. 답이 필요한 곳은 기록할 때뿐이다. 그래서 기다리는 자리를
+핫패스에서 전부 뺐다: `nodes[].is_trail` 조차 출력 전용이라 자리만 잡아 두고
+런 끝에 채운다 (한 군데라도 남기면 겹치기가 통째로 사라진다 — 실제로 그렇게
+짰다가 속도가 하나도 안 붙었다).
+
+**줄을 세우는 것은 서버의 일이다.** 워커 수를 조여도 큐가 vLLM 에서 이
+스레드풀로 옮겨올 뿐이고, 큐잉·동시성은 app 의 관심사가 아니다 (→ 루트
+CLAUDE.md). 순서는 워커 수와 무관하게 지켜진다 — `resolve` 가 FIFO 로만
+받으므로 probes·런로그는 보낸 순서 그대로다 (재현성).
+
+실제로 띄워지는 개수는 상한이 아니라 **캡처 속도**가 정한다. 2026-08-22
+약수역 500m 실측(원격 vLLM, `--max-num-seqs 1`)에서 서버 대기열은 초반
+10분간 2~4 였다가 그 뒤로는 0~1 로 내려앉았다 — 그 시점부터 병목은 VLM 이
+아니라 캡처다. 캡처만 따로 떠 두려면 `run_collect.py` 를 쓴다.
+
+손잡이는 `vlm.max_inflight` 이고 0 이 옛 동작이다 (→ 20-app-design.md).
 """
 from __future__ import annotations
 
 import time
 from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from . import geo, settings
@@ -76,6 +100,9 @@ class ExploreConfig:
     max_candidates: int
     snap_radius_m: float
 
+    # 답을 안 받은 채 서버에 띄워 둘 판정 수. 캡처와 VLM 을 겹치게 하는 손잡이다
+    max_inflight: int
+
     # 캡처한 바이트를 서버로 보낼 때의 규칙 (크기·품질). 루프가 imaging 에
     # 넘긴다 — 모듈 상수로 읽게 두면 --config 가 무시된다
     image: object
@@ -87,6 +114,7 @@ class ExploreConfig:
             max_distance_m=s.budget.max_distance_m,
             max_candidates=s.candidates.max_candidates,
             snap_radius_m=s.geo.snap_radius_m,
+            max_inflight=s.vlm.max_inflight,
             image=s.image,
         )
 
@@ -161,12 +189,36 @@ def _candidates(provider, pano: Pano, bearing: float, came_from: str | None,
 
 
 @dataclass
+class _Pending:
+    """서버에 보내 놓고 아직 답을 안 받은 판정 하나.
+
+    캡처는 이미 끝났고, 서버가 답하는 동안 **다음 캡처가 돈다.** 이게 가능한
+    이유는 위 "아님 판정도 확장한다" 와 "큐는 하나다" 다 — 판정값은 큐의
+    순서도 확장 여부도 바꾸지 않으므로 답을 기다릴 이유가 기록할 때밖에 없다.
+    판정이 그래프 모양을 정하는 설계였다면 이 겹치기는 성립하지 않는다.
+    """
+    fut: Future
+    pano: Pano             # 어디서 찍었나 (런로그용)
+    from_pano: str
+    heading: float
+    nb: Neighbor
+    depth: int
+    raw: bytes             # 캡처 원본. 답이 와야 런로그에 함께 남길 수 있다
+    src_format: str
+    is_trail: bool | None = None
+    resolved: bool = False
+
+
+@dataclass
 class _Node:
     depth: int
     bearing: float                 # 이 노드에 들어온 진행 방위. 후보 정렬의 기준
     came_from: str | None          # 부모 pano_id
     pano: Pano                     # 이웃이 곧 다음 지점이라 큐에 들어올 때 이미 안다
-    is_trail: bool | None = None   # 이 노드를 발견한 판정. 시작 노드만 None (판정 전)
+    # 이 노드를 발견한 판정. 아직 서버에서 안 왔을 수 있어 **결과가 아니라
+    # 그 자리(_Pending)** 를 들고 있다가 큐에서 꺼낼 때 값을 받는다.
+    # 시작 노드만 None (판정 없이 시작한다)
+    found_by: _Pending | None = None
 
 
 def explore(provider, client, start: tuple[float, float], start_bearing: float = 0.0,
@@ -177,6 +229,21 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
     res = ExploreResult()
     t0 = time.time()
     tallies: dict[str, dict] = {}
+
+    # 워커 수 = max_inflight. **줄을 세우는 것은 서버의 일이다** — 여기서
+    # 워커를 조이면 큐가 vLLM 이 아니라 이 스레드풀로 옮겨올 뿐이고, 그건
+    # app 이 하면 안 되는 일이다 (→ 루트 CLAUDE.md: 큐잉·동시성은 서빙 관심사).
+    #
+    # 스레드는 필요한 만큼만 생긴다 (ThreadPoolExecutor 가 게으르게 만든다).
+    # 실제 동시 요청 수는 캡처 속도가 정한다 — 캡처가 한 번에 하나씩 나오므로
+    # 띄워 둔 개수는 "VLM 지연 ÷ 캡처 간격" 근처에서 저절로 멈춘다.
+    #
+    # 순서는 워커 수와 무관하게 지켜진다: `resolve` 가 FIFO 로만 받으므로
+    # probes·런로그는 보낸 순서 그대로다 (→ 아래 resolve).
+    pool = ThreadPoolExecutor(max_workers=max(1, cfg.max_inflight),
+                              thread_name_prefix="vlm")
+    pending: deque[_Pending] = deque()   # 띄워 두고 아직 안 받은 것들 (FIFO)
+    abort: dict = {}                     # 첫 VLM 실패. 뒤따르는 것은 메아리다
 
     def warn(code: str, **detail) -> None:
         """1회성 경고. 결과와 런로그 **양쪽에** 넣는다 — 갈라지면 log=None 인
@@ -199,10 +266,16 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
         for code, d in tallies.items():
             res.warnings.append(warn_mod.make(code, **d))
         res.wall_s = time.time() - t0
+        # 띄워 둔 호출이 남은 채로 돌아가면 스레드가 프로세스를 붙잡는다
+        pool.shutdown(wait=True)
         return res
 
-    def probe(p: Pano, hdg: float, depth: int) -> bool | None:
-        """한 방향을 물어본다. None 은 '판정 불가' (캡처 실패)."""
+    def submit(p: Pano, hdg: float, depth: int, nb: Neighbor) -> _Pending | None:
+        """한 방향을 캡처해서 **서버에 띄운다.** None 은 캡처 실패.
+
+        캡처는 여기서 끝내고 판정은 기다리지 않는다. 답을 기다리는 자리는
+        `resolve()` 하나뿐이고, 그 사이에 다음 캡처가 돈다.
+        """
         try:
             raw = provider.capture(p, hdg)
         except Exception as e:
@@ -215,12 +288,53 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
             tally("capture_failed", pano_id=p.pano_id, heading=round(hdg, 1))
             return None
         uri, src_format = view_to_data_uri(raw, cfg.image)
-        v = client.assess(uri, heading=hdg)
+        pd = _Pending(fut=pool.submit(client.assess, uri, heading=hdg),
+                      pano=p, from_pano=p.pano_id, heading=hdg, nb=nb,
+                      depth=depth, raw=raw, src_format=src_format)
+        pending.append(pd)
+        return pd
+
+    def resolve(pd: _Pending) -> None:
+        """답 하나를 받아 기록한다. **FIFO 로만 불린다** — 직렬로 돌 때와
+        probes·런로그의 순서가 같아야 두 런을 비교할 수 있다 (재현성).
+        """
+        pd.resolved = True
+        try:
+            v = pd.fut.result()
+        except (ImageIgnoredError, ServerDeadError, VlmError) as e:
+            # 첫 실패만 남긴다. 뒤따라 온 것들은 같은 원인의 메아리다
+            if not abort:
+                abort["code"] = ("image_ignored" if isinstance(e, ImageIgnoredError)
+                                 else "server_dead" if isinstance(e, ServerDeadError)
+                                 else "vlm_error")
+                abort["error"] = str(e)[:400]
+            return
         res.calls += 1
+        pd.is_trail = v.is_trail
         if log:
-            log.probe(step=depth, pano_id=p.pano_id, lat=p.lat, lng=p.lng,
-                      heading=hdg, verdict=v, src_format=src_format, image=raw)
-        return v.is_trail
+            log.probe(step=pd.depth, pano_id=pd.pano.pano_id, lat=pd.pano.lat,
+                      lng=pd.pano.lng, heading=pd.heading, verdict=v,
+                      src_format=pd.src_format, image=pd.raw)
+        # to_* 는 그리기/UI 용이다. 후보가 곧 목표 pano 라 항상 채워진다.
+        res.probes.append({"from_pano": pd.from_pano, "heading": round(pd.heading, 1),
+                           "to_pano": pd.nb.pano_id, "to_lat": pd.nb.lat,
+                           "to_lng": pd.nb.lng, "is_trail": v.is_trail,
+                           "depth": pd.depth})
+
+    def pump(keep: int) -> None:
+        """받을 수 있는 것을 받는다. 띄워 둔 것이 keep 개 이하가 될 때까지는
+        기다려서라도 받는다.
+
+        **이미 도착한 답을 먼저 치우는 것이 중요하다.** 안 그러면 실패를
+        max_inflight 개만큼 늦게 알아채고, 그 사이 루프가 한 노드를 더
+        처리해서 없던 경고(neighbors_missing 등)를 만들어낸다 — 경고는
+        사람이 읽는 것이라 그런 잡음이 끼면 안 된다.
+        """
+        while pending and pending[0].fut.done() and not abort:
+            resolve(pending.popleft())
+        while len(pending) > keep and not abort:
+            resolve(pending.popleft())
+
 
     def leftover(node: _Node, reason: str) -> dict:
         """예산에 걸려 못 간 큐 항목을 frontier 형태로."""
@@ -256,6 +370,9 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
     def drain() -> list[dict]:
         return [leftover(n, res.stop_reason) for n in q]
 
+    # (노드 행, 그 노드를 발견한 판정). 값은 런 끝에 채운다 — 위 ⚠️ 참조
+    node_slots: list[tuple[dict, _Pending | None]] = []
+
     while q:
         if time.time() - t0 > cfg.max_seconds:
             res.stop_reason = "time_budget"
@@ -264,9 +381,16 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
 
         node = q.popleft()
 
-        res.nodes.append({"pano_id": node.pano.pano_id, "lat": node.pano.lat,
-                          "lng": node.pano.lng, "depth": node.depth,
-                          "parent": node.came_from, "is_trail": node.is_trail})
+        # ⚠️ 여기서 판정을 **기다리지 않는다.** `is_trail` 은 출력 전용이라
+        # 루프의 어떤 판단도 읽지 않는다 (확장 여부도 큐 순서도 안 바꾼다).
+        # 기다리면 다음 캡처가 그만큼 늦어져 겹치기가 통째로 사라진다 —
+        # 실제로 그렇게 짰다가 속도가 하나도 안 붙었다. 자리만 잡아 두고
+        # 런 끝에 채운다.
+        row = {"pano_id": node.pano.pano_id, "lat": node.pano.lat,
+               "lng": node.pano.lng, "depth": node.depth,
+               "parent": node.came_from, "is_trail": None}
+        res.nodes.append(row)
+        node_slots.append((row, node.found_by))
 
         if geo.haversine_m(origin, (node.pano.lat, node.pano.lng)) > cfg.max_distance_m:
             # 마킹은 하되 확장하지 않는다. 반경 밖은 안 본 것이지 없는 것이 아니다
@@ -302,42 +426,49 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
                 budget_hit = True
                 break
 
-            try:
-                ok = probe(node.pano, hdg, node.depth)
-            except (ImageIgnoredError, ServerDeadError, VlmError) as e:
-                # 한때 앞의 둘은 stop_reason 을 세팅한 **직후 raise** 했다.
-                # 그 res 는 호출자에게 반환되지 않으므로 런로그에는 "aborted"
-                # 가 남았다 — 세팅한 값이 아무도 못 읽는 객체 위에 있었다.
-                # 시끄럽게 죽는 역할은 러너가 stop_reason 을 보고 맡는다.
-                code = ("image_ignored" if isinstance(e, ImageIgnoredError)
-                        else "server_dead" if isinstance(e, ServerDeadError)
-                        else "vlm_error")
-                if log:
-                    log.event(code, step=node.depth, error=str(e)[:400])
-                warn(code, error=str(e)[:400])
-                res.stop_reason = code
-                budget_hit = True
-                break
-
-            if ok is None:
+            pd = submit(node.pano, hdg, node.depth, nb)
+            if pd is None:
                 # 캡처 실패는 판정이 아니다. probes 에 넣으면 "아니오" 와 섞인다 —
                 # 이 레포의 사고는 전부 그런 혼동에서 났다. 로그(capture_failed)만 남긴다
                 continue
 
-            # to_* 는 그리기/UI 용이다. 후보가 곧 목표 pano 라 항상 채워진다.
-            res.probes.append({"from_pano": node.pano.pano_id, "heading": round(hdg, 1),
-                               "to_pano": nb.pano_id, "to_lat": nb.lat, "to_lng": nb.lng,
-                               "is_trail": ok, "depth": node.depth})
+            # 판정을 기다리지 않고 그래프를 민다. 판정값은 이 둘 중 어느 것도
+            # 바꾸지 않는다 — 그게 겹치기가 성립하는 유일한 이유다.
             # 첫 접근의 판정이 그 pano 의 판정이다 — 참이든 거짓이든 다시 묻지 않는다
             visited.add(nb.pano_id)
+            q.append(_Node(depth=node.depth + 1, bearing=hdg,
+                           came_from=node.pano.pano_id, found_by=pd,
+                           pano=Pano(pano_id=nb.pano_id, lat=nb.lat, lng=nb.lng)))
 
-            child = _Node(depth=node.depth + 1, bearing=hdg,
-                          came_from=node.pano.pano_id, is_trail=ok,
-                          pano=Pano(pano_id=nb.pano_id, lat=nb.lat, lng=nb.lng))
-            q.append(child)
+            # 띄워 둔 것이 상한을 넘으면 여기서 받는다. 다음 캡처는 그동안 돈다.
+            pump(cfg.max_inflight)
+            if abort:
+                # 한때 이 실패들은 stop_reason 을 세팅한 **직후 raise** 했다.
+                # 그 res 는 호출자에게 반환되지 않으므로 런로그에는 "aborted"
+                # 가 남았다 — 세팅한 값이 아무도 못 읽는 객체 위에 있었다.
+                # 시끄럽게 죽는 역할은 러너가 stop_reason 을 보고 맡는다.
+                if log:
+                    log.event(abort["code"], step=node.depth, error=abort["error"])
+                warn(abort["code"], error=abort["error"])
+                res.stop_reason = abort["code"]
+                budget_hit = True
+                break
 
         if budget_hit:
             res.frontier += drain()
             break
+
+    # 큐를 다 비웠어도 띄워 둔 판정이 남아 있다 — 마지막 것들을 받는다
+    if not abort:
+        pump(0)
+    # 미뤄 둔 노드 판정을 채운다. 실패로 끝난 런은 못 받은 것이 None 으로 남는다
+    for row, pd in node_slots:
+        if pd is not None:
+            row["is_trail"] = pd.is_trail
+    if abort and not res.stop_reason:
+        if log:
+            log.event(abort["code"], step=0, error=abort["error"])
+        warn(abort["code"], error=abort["error"])
+        res.stop_reason = abort["code"]
 
     return done(res.stop_reason or "exhausted")

@@ -9,12 +9,19 @@ HTTP 200 + 정상 JSON 이면서 완전히 틀린 응답이 실제로 나온다:
 """
 import io
 import json
+import threading
 import urllib.error
 
 import pytest
 
 from trailwalk import prompt as P
-from trailwalk.vlm import ImageIgnoredError, ServerDeadError, VlmClient, VlmError
+from trailwalk.vlm import (
+    ImageIgnoredError,
+    ServerDeadError,
+    Stats,
+    VlmClient,
+    VlmError,
+)
 
 URI = "data:image/jpeg;base64,AAAA"
 
@@ -106,6 +113,77 @@ def test_첫_호출의_캐시미스는_세지_않는다():
     assert c.stats.cache_misses == 0
     c.assess(URI)
     assert c.stats.cache_misses == 1
+
+
+def test_캐시정보가_null이어도_판정이_나온다():
+    """vLLM 은 `prompt_tokens_details` 를 **`null` 로 명시해서** 보낸다.
+    `.get(key, {})` 의 기본값은 키가 없을 때만 먹으므로 None 이 그대로 흘러
+    `None.get()` 으로 터졌다 — llama.cpp 는 키를 아예 빼서 안 드러났다.
+    서버가 캐시 정보를 안 주는 것은 판정을 못 쓸 이유가 아니다."""
+    payload = ok_payload()
+    payload["usage"]["prompt_tokens_details"] = None
+    c, _ = client(payload)
+    v = c.assess(URI)
+    assert v.is_trail is True
+    assert v.cached_tokens == 0
+
+
+
+class _SpyLock:
+    """잡혀 있는지 밖에서 볼 수 있는 락."""
+
+    def __init__(self):
+        self._l = threading.Lock()
+        self.held = False
+
+    def __enter__(self):
+        self._l.acquire()
+        self.held = True
+        return self
+
+    def __exit__(self, *exc):
+        self.held = False
+        self._l.release()
+
+
+class _GuardedStats(Stats):
+    """필드가 바뀌는 **순간마다** 락이 잡혀 있는지 확인한다."""
+
+    def __init__(self, spy):
+        object.__setattr__(self, "spy", spy)
+        with spy:                      # 초기화는 경쟁 대상이 아니다
+            super().__init__()
+
+    def __setattr__(self, name, value):
+        assert self.spy.held, f"Stats.{name} 을 락 밖에서 바꿨다"
+        object.__setattr__(self, name, value)
+
+
+def test_카운터는_락_안에서만_바뀐다():
+    """겹치기(→ vlm.max_inflight)를 켜면 **클라이언트 하나를 여러 스레드가**
+    부른다. Stats 는 이 레포가 조용한 실패를 잡으려고 둔 유일한 계측이라,
+    경쟁으로 몇 건 새면 그게 곧 잘못된 안심이 된다.
+
+    ⚠️ 스레드를 여럿 돌려 "샜나" 를 보는 테스트는 **부적이다.** 실제로 그렇게
+    짰더니 락을 빼도 통과했다 — 새는지 여부가 스케줄링에 달려 있어서다.
+    그래서 불변식을 직접 못박는다: 카운터가 바뀌는 순간 락이 잡혀 있어야 한다.
+    새 카운터를 락 밖에서 올리면 스레드 없이도 여기서 걸린다.
+    """
+    spy = _SpyLock()
+    # 파싱 실패 1회 → 재시도 → 성공. _bump 와 _parse 의 갱신을 한 번에 지난다
+    c, _ = client(ok_payload(content="{ 안 닫힌"), ok_payload())
+    c._lock, c.stats = spy, _GuardedStats(spy)
+
+    assert c.assess(URI).is_trail is True
+    assert (c.stats.parse_failures, c.stats.retries, c.stats.calls) == (1, 1, 1)
+    assert not spy.held
+
+
+def test_usage에_캐시_키가_아예_없어도_판정이_나온다():
+    payload = ok_payload()
+    del payload["usage"]["prompt_tokens_details"]
+    c, _ = client(payload)
+    assert c.assess(URI).cached_tokens == 0
 
 
 def test_temperature는_0이고_스키마가_강제된다():

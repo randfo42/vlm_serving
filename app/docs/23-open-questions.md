@@ -106,13 +106,14 @@ python app/check_kakao.py --headed   # 검은 화면이 의심되면
 그 다음:
 
 ```bash
-python app/run_walk.py --provider kakao \
-    --start 37.5768,127.0246 --bearing 90 --steps 5 --headed
+# 설정에서 provider: kakao, start: [37.5768, 127.0246], bearing: 90, headed: true
+# 로 고치고, budget.max_distance_m 을 줄여 몇 걸음만 보게 한다
+python app/run_explore.py --config app/config/my.yaml
 ```
 
-`--headed` 로 시작할 것. 완전 headless 에서 WebGL 이 안 그려져 **검은 화면**이
-찍히는 경우가 있고, 그러면 모델은 "산책로 아님" 을 정직하게 답해서 원인이
-로드뷰가 아니라 렌더에 있다는 걸 놓치기 쉽다.
+`run.headed: true` 로 시작할 것. 완전 headless 에서 WebGL 이 안 그려져 **검은
+화면**이 찍히는 경우가 있고, 그러면 모델은 "산책로 아님" 을 정직하게 답해서
+원인이 로드뷰가 아니라 렌더에 있다는 걸 놓치기 쉽다.
 
 확인할 것 세 가지:
 
@@ -123,7 +124,7 @@ python app/run_walk.py --provider kakao \
 | 화면이 검다 | 렌더 문제(WebGL). 로드뷰 탓이 아니다 |
 | 모두 `is_trail=false` 인데 그림은 멀쩡 | 프롬프트/판정 문제 |
 
-**네 가지가 겉으로는 다 "안 된다" 로 보인다.** `--headed` 로 브라우저를 띄워
+**네 가지가 겉으로는 다 "안 된다" 로 보인다.** `run.headed` 로 브라우저를 띄워
 직접 보는 것이 이들을 가르는 가장 빠른 방법이다.
 
 **표본은 테마별로 고를 것.** "한강·하천이 좋은 길"(하천변, 차도와 가까움)과
@@ -317,7 +318,7 @@ v2 가 거부한 4건은 전부 청계천 하천변 보행로였다. 원인은 �
 v3 는 폭·노면 조건을 판정에서 빼고 하나만 남겼다: *정의된 길이 카메라 아래로
 이어지는가.* 보행자가 그 노면 위를 걷고 있으면 강한 증거라는 문장도 넣었다.
 
-v1·v2 는 지우지 않는다. `--prompt system_v1` 로 아직 고를 수 있다.
+v1·v2 는 지우지 않는다. 설정의 `vlm.prompt_version` 으로 아직 고를 수 있다.
 
 > **부수 발견:** `walk` 스키마(is_trail 만)와 `eval` 스키마(+confidence)는
 > 판정을 바꾸지 않는다. 4개 pano × 2프롬프트에서 8/8 일치. 평가에서 잰
