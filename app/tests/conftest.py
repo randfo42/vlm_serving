@@ -8,6 +8,7 @@
 때문에 "안 터졌다" 는 아무것도 보장하지 않는다.
 """
 import io
+import threading
 
 import pytest
 from PIL import Image
@@ -20,6 +21,28 @@ def make_image(size=(1280, 720), fmt="JPEG", color=(90, 140, 90)) -> bytes:
     buf = io.BytesIO()
     Image.new("RGB", size, color).save(buf, format=fmt)
     return buf.getvalue()
+
+
+# 캡처 신분증을 색으로 싣는다. 32 단위라 JPEG 재인코딩의 오차(몇 단위)보다
+# 훨씬 크고, 8×8 = 64개까지 구분한다 — 테스트 한 건의 판정 수로 충분하다.
+_STEP, _BASE = 32, 16
+
+
+def _ident_color(i: int) -> tuple[int, int, int]:
+    assert i < 64, f"테스트가 캡처 64건을 넘었다 ({i}) — 인코딩을 넓혀야 한다"
+    return (_BASE + (i % 8) * _STEP, _BASE + (i // 8) * _STEP, 128)
+
+
+def _ident_of(uri: str) -> int:
+    """data URI 를 되읽어 몇 번째 캡처였는지."""
+    import base64
+    raw = base64.b64decode(uri.split(",", 1)[1])
+    im = Image.open(io.BytesIO(raw)).convert("RGB")
+    r, g, _ = im.getpixel((im.width // 2, im.height // 2))
+    def near(v: int) -> int:
+        return max(0, min(7, round((v - _BASE) / _STEP)))
+
+    return near(r) + near(g) * 8
 
 
 @pytest.fixture
@@ -67,7 +90,7 @@ class Provider:
         self.start = Pano(pano_id=start[0], lat=start[1], lng=start[2])
         self.probes = []          # (pano_id, heading) — 무엇을 물었는지
         self.nearest_calls = 0
-        self._img = make_image(size=(320, 180))
+        self._lock = threading.Lock()
 
     def nearest(self, lat, lng, radius_m):
         self.nearest_calls += 1
@@ -80,18 +103,37 @@ class Provider:
         return list(self.graph.get(pano.pano_id, []))
 
     def capture(self, pano, heading):
-        self.probes.append((pano.pano_id, round(heading, 1)))
-        return self._img
+        """캡처마다 **다른 색**의 이미지를 준다.
+
+        색이 곧 그 캡처의 신분증이다. 판정을 누가 요청했는지 알아내는 유일한
+        수단이 이것뿐이라서다 — 캡처와 판정이 겹쳐 도는 순간 "몇 번째로
+        불렸나" 로는 짝을 못 짓는다 (→ Client).
+
+        32 단위로 띄엄띄엄 고른다. imaging 이 리사이즈 + JPEG 재인코딩을
+        하므로 값이 몇 단위 흔들리는데, 그보다 훨씬 큰 간격이라 안 섞인다.
+        """
+        with self._lock:
+            i = len(self.probes)
+            self.probes.append((pano.pano_id, round(heading, 1)))
+        return make_image(size=(320, 180), color=_ident_color(i))
 
     def close(self):
         pass
 
 
 class Client:
-    """probes 의 마지막 항목을 보고 판정을 돌려준다.
+    """**받은 이미지가 어느 캡처인지** 보고 판정을 돌려준다.
 
     verdicts 에 없는 조합은 False. "명시한 것만 산책로" 라서 테스트가
     실수로 통과하는 일이 없다.
+
+    짝을 어떻게 짓느냐로 두 번 틀렸다. 처음엔 `probes[-1]`(가장 최근 캡처)을
+    봤는데, 루프가 답을 기다리지 않고 다음을 캡처하게 되자 그 사이 끼어든
+    캡처를 집었다. 다음엔 캡처 순서대로 하나씩 꺼냈는데, 워커가 여럿이 되자
+    판정이 도착하는 순서가 보낸 순서와 달라져 또 어긋났다.
+
+    둘 다 "몇 번째냐" 로 짝을 지으려 한 것이 문제였다. 진짜 `VlmClient` 는
+    URI 를 인자로 받으므로 **이미지 자체가 신분증**이다 — 가짜도 그렇게 한다.
     """
 
     def __init__(self, provider, verdicts):
@@ -99,7 +141,8 @@ class Client:
         self.verdicts = verdicts
 
     def assess(self, uri, *, heading=None):
-        return Verdict(self.verdicts.get(self.provider.probes[-1], False))
+        return Verdict(self.verdicts.get(
+            self.provider.probes[_ident_of(uri)], False))
 
 
 def nb(pano_id, heading, lat=37.5, lng=127.0):

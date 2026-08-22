@@ -327,18 +327,67 @@ class _TickingClient(Client):
 
 def test_시간_예산은_노드_경계가_아니라_후보마다_걸린다(monkeypatch):
     """한 노드의 후보가 max_candidates 개까지 되므로, 노드 경계에서만 보면
-    캡처가 느릴 때 그 노드 하나가 통째로 예산을 넘겨 실행된다."""
+    캡처가 느릴 때 그 노드 하나가 통째로 예산을 넘겨 실행된다.
+
+    `max_inflight=0` 으로 고정한다 — 겹치기를 끄면 예산이 정확히 어디서
+    끊는지가 드러난다. 겹칠 때의 초과분은 아래 별도 테스트가 못박는다.
+    """
     clock = _Clock()
     monkeypatch.setattr(explore_mod, "time", clock)
     p = Provider({"S": [nb("A", 0.0), nb("B", 90.0), nb("C", 180.0), nb("D", 270.0)],
                   "A": [], "B": [], "C": [], "D": []})
-    res = run(p, {}, client=_TickingClient(p, {}, clock), max_seconds=1.5)
+    res = run(p, {}, client=_TickingClient(p, {}, clock),
+              max_seconds=1.5, max_inflight=0)
     assert res.calls == 2, f"후보 루프 안에서 안 끊었다: {res.calls}호출"
     assert res.stop_reason == "time_budget"
     # 못 물은 후보 둘(D·C)과, "아님" 판정으로 큐에 들어갔다 못 간 둘(A·B).
     # 어느 쪽도 버리지 않는다 — 판정을 안 받았을 뿐 갈래는 갈래다
     assert {f["pano_id"] for f in res.frontier} == {"A", "B", "C", "D"}
     assert {f["reason"] for f in res.frontier} == {"time_budget"}
+
+
+def test_겹치면_예산을_인플라이트만큼_넘겨서_끊는다(monkeypatch):
+    """캡처와 VLM 을 겹치는 값(=겹치기의 요점)이지만 공짜는 아니다.
+
+    예산을 확인하는 시점에 **이미 띄워 둔 판정이 max_inflight 개** 있고,
+    그건 되돌릴 수 없다. 그래서 정확히 그만큼 더 하고 끊는다. 이 초과가
+    싫으면 max_inflight 를 0 으로 두면 되고, 그러면 겹치기도 없다.
+    """
+    def once(inflight):
+        clock = _Clock()
+        monkeypatch.setattr(explore_mod, "time", clock)
+        prov = Provider({"S": [nb("A", 0.0), nb("B", 90.0), nb("C", 180.0), nb("D", 270.0)],
+                         "A": [], "B": [], "C": [], "D": []})
+        return run(prov, {}, client=_TickingClient(prov, {}, clock),
+                   max_seconds=1.5, max_inflight=inflight)
+
+    serial, piped = once(0), once(1)
+    assert piped.calls == serial.calls + 1
+    assert piped.stop_reason == serial.stop_reason == "time_budget"
+
+
+def test_겹쳐도_판정_순서와_값이_그대로다():
+    """겹치기는 **속도만** 바꿔야 한다. 워커가 하나고 기록이 FIFO 라
+    probes 의 순서·내용이 직렬로 돌 때와 같아야 한다 — 두 런을 비교할 수
+    있다는 것이 이 레포가 지켜 온 성질이다.
+    """
+    graph = {"S": [nb("A", 0.0), nb("B", 90.0), nb("D", 180.0)],
+             "A": [nb("C", 10.0)], "B": [nb("E", 95.0)], "C": [], "D": [], "E": []}
+    verdicts = {("S", 0.0): True, ("S", 90.0): False, ("S", 180.0): True,
+                ("A", 10.0): True, ("B", 95.0): False}
+
+    def once(inflight):
+        return run(Provider(dict(graph)), dict(verdicts), max_inflight=inflight)
+
+    # 0 = 겹치기 없음, 1 = 한 개, 1000 = 정본 기본값(사실상 무제한).
+    # 워커 수가 곧 max_inflight 라 1000 은 진짜로 동시에 나간다.
+    serial, one, many = once(0), once(1), once(1000)
+    for other, tag in ((one, "max_inflight=1"), (many, "max_inflight=1000")):
+        assert serial.probes == other.probes, tag
+        assert [n["is_trail"] for n in serial.nodes] == \
+               [n["is_trail"] for n in other.nodes], tag
+        assert serial.calls == other.calls, tag
+        assert other.stop_reason == "exhausted", tag
 
 
 # ── 경고 ───────────────────────────────────────────────────────────────────

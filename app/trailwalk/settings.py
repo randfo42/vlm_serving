@@ -79,6 +79,7 @@ class VlmSettings:
     max_tokens: int
     timeout_s: int
     fatal_500_streak: int
+    max_inflight: int
 
 
 @dataclass(frozen=True)

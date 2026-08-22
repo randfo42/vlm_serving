@@ -13,6 +13,7 @@ docs/10-client-guide.md 의 체크리스트를 코드로 옮긴 것이다. 이 �
 """
 import contextlib
 import json
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -91,6 +92,20 @@ class VlmClient:
         self.system = P.load(system_version)
         self.stats = Stats()
         self._streak_500 = 0
+        # 클라이언트 **하나를 여러 스레드가 부른다.** explore 가 캡처와 VLM 을
+        # 겹치면서(→ vlm.max_inflight) assess 가 동시에 돌기 때문이다.
+        # 보호하는 것은 카운터와 500 연속 횟수뿐이다 — HTTP 는 락 밖에서 돈다.
+        # 안 걸면 조용히 틀린다: Stats 는 실제보다 적게 세이고(이 레포가 조용한
+        # 실패를 잡으려고 만든 바로 그 계측이다), fatal_500_streak 서킷브레이커는
+        # 같은 입력에도 스레드 스케줄링에 따라 걸리거나 안 걸린다.
+        self._lock = threading.Lock()
+
+    def _bump(self, **counters: float) -> None:
+        """Stats 카운터를 올린다. 락을 잡는 자리는 여기와 _parse 둘뿐이고,
+        둘 다 안에서 I/O 를 하지 않는다 (기다리는 동안 락을 쥐지 않는다)."""
+        with self._lock:
+            for name, n in counters.items():
+                setattr(self.stats, name, getattr(self.stats, name) + n)
 
     # ── HTTP ────────────────────────────────────────────────────────────
     def _post(self, body: dict) -> tuple[dict, float]:
@@ -127,7 +142,8 @@ class VlmClient:
         for attempt in range(4):
             try:
                 payload, ms = self._call_once(data_uri, text)
-                self._streak_500 = 0
+                with self._lock:
+                    self._streak_500 = 0
             except urllib.error.HTTPError as e:
                 detail = e.read()[:300].decode("utf-8", "replace")
                 if e.code == 400:
@@ -135,32 +151,35 @@ class VlmClient:
                     raise VlmError(f"400 잘못된 이미지: {detail}") from e
                 if e.code == 503:
                     time.sleep(backoff); backoff *= 2
-                    self.stats.retries += 1
+                    self._bump(retries=1)
                     continue
                 if e.code == 500:
-                    self._streak_500 += 1
-                    if self._streak_500 >= self.fatal_500_streak:
+                    # 올리기와 읽기가 갈라지면 두 스레드가 같은 값을 보고
+                    # 둘 다 문턱을 못 넘긴다 — 좀비를 놓친다
+                    with self._lock:
+                        self._streak_500 += 1
+                        streak = self._streak_500
+                    if streak >= self.fatal_500_streak:
                         raise ServerDeadError(
-                            f"500 이 {self._streak_500}회 연속. Metal OOM 좀비 상태로 보인다.\n"
+                            f"500 이 {streak}회 연속. Metal OOM 좀비 상태로 보인다.\n"
                             f"  /health 는 200 을 돌려주지만 거짓이다. 재시작이 유일한 해결책:\n"
                             f"    docs/11-server-ops.md §5\n  마지막 응답: {detail}") from e
                     time.sleep(backoff); backoff *= 2
-                    self.stats.retries += 1
+                    self._bump(retries=1)
                     continue
                 raise VlmError(f"HTTP {e.code}: {detail}") from e
             except (urllib.error.URLError, TimeoutError) as e:
                 if attempt == 3:
                     raise VlmError(f"서버에 닿지 못했다: {e}") from e
                 time.sleep(backoff); backoff *= 2
-                self.stats.retries += 1
+                self._bump(retries=1)
                 continue
 
             verdict = self._parse(payload, ms)
             if verdict is not None:
                 return verdict
             # JSON 파싱 실패 — 1회만 재시도한다 (§5.2)
-            self.stats.parse_failures += 1
-            self.stats.retries += 1
+            self._bump(parse_failures=1, retries=1)
 
         raise VlmError("재시도 예산 소진")
 
@@ -193,10 +212,11 @@ class VlmClient:
 
         # 런의 첫 호출은 캐시가 비어 있는 게 정상이다. 그걸 경고로 세면 매 런마다
         # 경고가 한 줄 뜨고, 사람은 곧 경고를 무시하게 된다. 둘째 호출부터 센다.
-        if cached == 0 and self.stats.calls > 0:
-            self.stats.cache_misses += 1
-        self.stats.calls += 1
-        self.stats.total_ms += ms
+        with self._lock:
+            if cached == 0 and self.stats.calls > 0:
+                self.stats.cache_misses += 1
+            self.stats.calls += 1
+            self.stats.total_ms += ms
 
         # 본문 값은 재검증하지 않는다 — §3.1 의 strict json_schema 를 서버가
         # 강제한다는 계약 위에서만 안전하다. is_trail 이 boolean 이 아니라
