@@ -51,6 +51,10 @@ class Verdict:
     cached_tokens: int
     completion_tokens: int
     latency_ms: float
+    # v4(범주형 스키마)에서만 채워진다. 불리언 스키마에서는 None 이다.
+    # is_trail 은 이 값에서 유도된 것이라 **경계를 옮기면 뜻이 달라진다** —
+    # 원본 범주를 같이 남겨야 나중에 다시 해석할 수 있다.
+    camera_surface: str | None = None
     raw: dict = field(repr=False, default_factory=dict)
 
 
@@ -85,7 +89,36 @@ class VlmClient:
         # --config 로 expected_image_tokens 를 바꾼 런이 옛 하한을 쓴다
         self.min_prompt_tokens = s.image.min_prompt_tokens
         self.schema_name = schema_name
+        # 이름부터 본다. 설정은 문자열 타입만 검사하므로 오타는 여기까지 온다 —
+        # dict 를 그냥 인덱싱하면 `KeyError: 'system_v5'` 한 줄이 전부고,
+        # 무엇이 잘못됐는지도 뭘 쓸 수 있는지도 안 알려준다.
+        if system_version not in P.COMPATIBLE:
+            raise P.PromptDriftError(
+                f"모르는 프롬프트 버전 {system_version!r}. "
+                f"아는 것: {', '.join(sorted(P.COMPATIBLE))}")
+        if schema_name not in P.SCHEMAS:
+            raise ValueError(
+                f"모르는 스키마 {schema_name!r}. "
+                f"아는 것: {', '.join(sorted(P.SCHEMAS))}")
+        if schema_name not in P.COMPATIBLE[system_version]:
+            raise ValueError(
+                f"프롬프트 {system_version} 와 스키마 {schema_name!r} 는 짝이 아니다.\n"
+                f"  쓸 수 있는 것: {P.COMPATIBLE[system_version]}\n"
+                f"  짝이 안 맞으면 에러가 아니라 환각이 난다 — 모델이 프롬프트에\n"
+                f"  없는 필드를 지어내고 서버가 형식을 맞춰 준다.")
         self.schema = P.SCHEMAS[schema_name]
+        # 범주형 스키마면 is_trail 을 서버가 아니라 여기서 만든다.
+        # 판정할 때마다 스키마 이름을 다시 보지 않고 한 번에 정해 둔다.
+        self.by_surface = schema_name in P.SURFACE_SCHEMAS
+        self.trail_surfaces = frozenset(s.vlm.trail_surfaces)
+        # 오타를 여기서 터뜨린다. 안 막으면 `park_paths` 하나가 그 범주를
+        # 통째로 False 로 만들고, 에러는 안 나며, 리포트에서는 모델이 못
+        # 맞힌 것처럼 보인다 — 이 레포가 막으려는 바로 그 실패 방식이다.
+        unknown = sorted(self.trail_surfaces - set(P.SURFACES))
+        if unknown:
+            raise ValueError(
+                f"vlm.trail_surfaces 에 모르는 범주 {unknown}\n"
+                f"  쓸 수 있는 값: {P.SURFACES}")
         # 클라이언트 수명 내내 같은 문자열을 재사용한다. 요청마다 다시 읽으면
         # 1바이트만 달라져도 프리픽스 캐시가 죽는데 에러는 안 난다.
         self.system_version = system_version
@@ -221,9 +254,13 @@ class VlmClient:
         # 본문 값은 재검증하지 않는다 — §3.1 의 strict json_schema 를 서버가
         # 강제한다는 계약 위에서만 안전하다. is_trail 이 boolean 이 아니라
         # 문자열로 오면 bool("false") is True 라 판정이 조용히 뒤집힌다
-        # (→ docs/10-client-guide.md §4.1).
+        # (→ docs/10-client-guide.md §4.1). 범주도 같다 — enum 을 서버가
+        # 강제하므로 SURFACES 밖의 값은 올 수 없다.
+        surface = obj["camera_surface"] if self.by_surface else None
         return Verdict(
-            is_trail=bool(obj["is_trail"]),
+            is_trail=(surface in self.trail_surfaces if self.by_surface
+                      else bool(obj["is_trail"])),
+            camera_surface=surface,
             confidence=obj.get("confidence"),
             prompt_tokens=pt,
             cached_tokens=cached,

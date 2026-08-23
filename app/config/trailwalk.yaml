@@ -108,16 +108,42 @@ geo:
 vlm:
   url: "http://127.0.0.1:8080/v1/chat/completions"
 
-  # 판정 기준. 세 버전은 세 개의 다른 질문이다 (app/prompts/).
+  # 판정 기준. 네 버전은 네 개의 다른 질문이다 (app/prompts/).
   #   v1 "이 사진에 산책로가 보이는가"      → 차도에서 True (갓길이 프레임에 보임)
   #   v2 "카메라가 산책로 위에 서 있는가"   → 폭·노면 조건이 청계천을 거부
-  #   v3 v2 에서 폭·노면 조건 제거          → 눈으로 확인한 7건 전부 적중
-  prompt_version: system_v3
+  #   v3 v2 에서 폭·노면 조건 제거          → 골목을 전부 True 로 셌다
+  #   v4 "카메라 발밑이 무엇인가" (범주)    → 차량 공유 여부를 관찰로 판별
+  #
+  # v3 를 왜 버렸나: 2026-08-23 약수동 500장에서 True 8건을 눈으로 봤더니
+  # 8건 전부 카메라가 차도 위였다. v3 의 "정의된 길이 카메라 아래로 이어지는가"
+  # 는 골목이 정확히 만족하는 조건이다 (→ trailwalk/prompt.py 독스트링).
+  prompt_version: system_v4
 
   # 출력 스키마. decode 가 ~37ms/token 이라 **필드 하나가 곧 지연**이다.
-  #   walk = is_trail 만 (17토큰 / 620ms) — 탐색 루프용
-  #   eval = + confidence 0~10 (26토큰) — ROC 용. 현재 전부 10 으로 포화 상태다
-  schema: walk
+  #   walk         = is_trail 만 (17토큰 / 620ms) — v1~v3 탐색 루프용
+  #   eval         = + confidence 0~10 (26토큰) — v1~v3 ROC 용
+  #   surface      = camera_surface 범주 하나 — v4 탐색 루프용
+  #   surface_eval = + confidence — v4 ROC 용
+  # 프롬프트 버전과 짝이 맞아야 한다: v4 는 is_trail 을 아예 안 낸다.
+  schema: surface
+
+  # ★ 어느 범주를 산책로로 셀 것인가. **프롬프트가 아니라 여기가 경계다.**
+  # 경계를 옮겨도 프롬프트 버전이 안 바뀌므로, 이미 받아 둔 camera_surface 를
+  # 다시 해석하는 것만으로 A/B 가 된다 (판정을 다시 안 받아도 된다).
+  #
+  # 지금 값은 라벨 세트(gil.seoul.go.kr 150코스)의 정의에 맞췄다 — 산책하러
+  # 가는 곳. 그 세트로만 정확도를 잴 수 있으므로 정의도 거기 맞춘다.
+  #
+  # 뺀 것 둘, 둘 다 의도적이다:
+  #   pedestrian_way — 볼라드로 막힌 벽돌 골목(신당동 곱창골목)이 여기 온다.
+  #                    걷기 좋은 길이지만 "산책하러 가는 곳" 은 아니라고 봤다.
+  #                    라벨이 생기면 이 줄에 넣었다 뺐다 하며 재면 된다.
+  #   sidewalk       — 라벨 코스가 보도로 지나가는 구간(경복궁둘레길 등)이
+  #                    전부 False 가 된다. 리포트에서 이건 오탐이 아니라
+  #                    정의 차이로 읽어야 한다 (→ docs/22-labels.md §11.3).
+  #
+  # 쓸 수 있는 값은 trailwalk/prompt.py 의 SURFACES 가 전부다. 오타는 터진다.
+  trail_surfaces: [park_path, waterside]
 
   # 출력 상한. walk 스키마 실측 17토큰의 3배 이상 여유다
   max_tokens: 60

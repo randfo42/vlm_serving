@@ -85,10 +85,26 @@ def test_스키마의_모든_필드가_프롬프트에_정의돼_있다():
     """
     for version in P.PINS:
         body = P.load(version).lower()
-        for name in P.SCHEMAS:
+        # 버전마다 낼 수 있는 스키마가 다르다 — v4 는 is_trail 을 아예 안 낸다.
+        # 전부 대조하면 "v1 이 camera_surface 를 설명 안 했다" 는 거짓 실패가 난다.
+        for name in P.COMPATIBLE[version]:
             for field in P.SCHEMAS[name]["properties"]:
                 assert field.replace("_", " ") in body or field in body, \
                     f"{version} 이 {field!r} 를 정의하지 않았다"
+
+
+def test_모든_스키마가_어느_버전엔가_짝이_있다():
+    """짝 없는 스키마는 아무도 못 쓰는 죽은 코드다."""
+    assert set(P.SCHEMAS) == {n for v in P.COMPATIBLE.values() for n in v}
+    assert set(P.COMPATIBLE) == set(P.PINS)
+
+
+def test_v4_프롬프트가_모든_범주를_설명한다():
+    """열거형에만 있고 프롬프트에 없는 범주는 모델이 뜻을 모른 채 낸다 —
+    위 테스트가 잡은 confidence 사고와 같은 모양이다."""
+    body = P.load("system_v4")
+    for surface in P.SURFACES:
+        assert surface in body, f"system_v4 가 {surface!r} 를 설명하지 않았다"
 
 
 # ── 이미지 뒤에 붙는 가변 텍스트 ────────────────────────────────────────────

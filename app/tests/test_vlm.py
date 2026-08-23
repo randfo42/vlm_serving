@@ -29,7 +29,8 @@ URI = "data:image/jpeg;base64,AAAA"
 def ok_payload(*, prompt_tokens=276, cached=200, content=None, finish="stop"):
     return {
         "choices": [{"finish_reason": finish,
-                     "message": {"content": content or json.dumps({"is_trail": True})}}],
+                     "message": {"content": content or json.dumps(
+                         {"camera_surface": "park_path"})}}],
         "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": 17,
                   "prompt_tokens_details": {"cached_tokens": cached}},
     }
@@ -192,21 +193,77 @@ def test_temperature는_0이고_스키마가_강제된다():
     body = fake.bodies[0]
     assert body["temperature"] == 0
     assert body["response_format"]["json_schema"]["strict"] is True
-    assert body["response_format"]["json_schema"]["schema"] == P.SCHEMAS["walk"]
+    assert body["response_format"]["json_schema"]["schema"] == P.SCHEMAS["surface"]
 
 
 def test_스키마_선택이_요청에_반영된다():
     c, fake = client(ok_payload(content=json.dumps({"is_trail": True, "confidence": 9})),
-                     schema_name="eval")
+                     schema_name="eval", system_version="system_v3")
     v = c.assess(URI)
     assert v.confidence == 9
     assert fake.bodies[0]["response_format"]["json_schema"]["schema"] == P.SCHEMAS["eval"]
 
 
 def test_프롬프트_버전을_고를_수_있다():
-    c, fake = client(ok_payload(), system_version="system_v1")
+    c, fake = client(ok_payload(content=json.dumps({"is_trail": True})),
+                     system_version="system_v1", schema_name="walk")
     c.assess(URI)
     assert fake.bodies[0]["messages"][0]["content"] == P.load("system_v1")
+
+
+# ── is_trail 은 v4 에서 서버가 아니라 설정이 정한다 ─────────────────────────
+
+def test_범주가_산책로인지는_설정이_정한다(monkeypatch):
+    """v4 는 is_trail 을 아예 내지 않는다. 경계는 `vlm.trail_surfaces` 다 —
+    프롬프트를 안 바꾸고 경계만 옮길 수 있어야 하는 것이 이 설계의 요점이다."""
+    for surface, want in [("park_path", True), ("waterside", True),
+                          ("shared_alley", False), ("roadway", False),
+                          ("pedestrian_way", False),   # 정본에서 뺐다
+                          ("sidewalk", False)]:
+        c, _ = client(ok_payload(content=json.dumps({"camera_surface": surface})))
+        v = c.assess(URI)
+        assert v.is_trail is want, f"{surface} 가 {v.is_trail}"
+        assert v.camera_surface == surface, "원본 범주를 안 남기면 재해석 불가"
+
+
+def test_경계를_옮기면_같은_응답의_판정이_바뀐다():
+    """같은 camera_surface 를 다시 판정받지 않고도 A/B 할 수 있어야 한다."""
+    body = json.dumps({"camera_surface": "pedestrian_way"})
+    strict, _ = client(ok_payload(content=body))
+    assert strict.assess(URI).is_trail is False
+    loose, _ = client(ok_payload(content=body))
+    loose.trail_surfaces = loose.trail_surfaces | {"pedestrian_way"}
+    assert loose.assess(URI).is_trail is True
+
+
+def test_모르는_범주는_설정_로드에서_터진다():
+    """오타 하나가 그 범주를 통째로 False 로 만들고 에러는 안 난다 —
+    리포트에서는 모델이 못 맞힌 것처럼 보인다."""
+    import dataclasses
+
+    from trailwalk import settings as S
+    st = S.SETTINGS
+    bad = dataclasses.replace(st, vlm=dataclasses.replace(
+        st.vlm, trail_surfaces=["park_paths"]))
+    with pytest.raises(ValueError, match="park_paths"):
+        VlmClient(settings=bad)
+
+
+def test_모르는_이름은_이름부터_말해_준다():
+    """설정은 문자열 타입만 검사하므로 오타가 여기까지 온다. 생짜 KeyError 가
+    나면 무엇이 잘못됐는지도, 뭘 쓸 수 있는지도 안 나온다."""
+    with pytest.raises(P.PromptDriftError, match="system_v4"):
+        VlmClient(system_version="system_v5", schema_name="surface")
+    with pytest.raises(ValueError, match="surface_eval"):
+        VlmClient(schema_name="surfaces")
+
+
+def test_프롬프트와_스키마의_짝이_안_맞으면_터진다():
+    """짝이 안 맞으면 HTTP 200 에 파싱도 성공하고 값만 환각이다."""
+    with pytest.raises(ValueError, match="짝이 아니다"):
+        VlmClient(system_version="system_v4", schema_name="walk")
+    with pytest.raises(ValueError, match="짝이 아니다"):
+        VlmClient(system_version="system_v3", schema_name="surface")
 
 
 # ── 서버 장애 ───────────────────────────────────────────────────────────────
