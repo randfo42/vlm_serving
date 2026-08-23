@@ -56,7 +56,7 @@ def _wire_bytes(raw: bytes, image) -> tuple[bytes, str]:
     return base64.b64decode(uri.split(",", 1)[1]), src_format
 
 
-def walk(provider, cfg, start_pano, bearing: float, max_views: int,
+def walk(provider, cfg, start_pano, bearing: float,
          on_view, deadline: float) -> dict:
     """explore 와 **같은 순서로** 후보를 밟으며 `on_view` 를 부른다.
 
@@ -67,6 +67,12 @@ def walk(provider, cfg, start_pano, bearing: float, max_views: int,
     `on_view(pano, heading, nb, depth)` 는 **캡처에 성공했는지**를 돌려준다.
     False 면 그 갈래는 큐에 넣지 않는다 — explore 도 캡처 실패한 갈래는
     확장하지 않는다 (판정이 없으니 갈래를 밟은 것이 아니다).
+
+    **장수로는 안 멈춘다.** 멈추는 조건은 explore 와 같은 둘뿐이다 —
+    반경(`cfg.max_distance_m`)과 벽시계(`deadline`). 장수 상한을 두면 이
+    스크립트의 존재 이유("explore 가 보냈을 바로 그 N 장")가 깨진다:
+    2026-08-23 GS25 반경 500m 수집이 1000장에서 끊겨 398m 까지밖에 못 갔고,
+    그건 500m 를 모은 것이 아니었다.
 
     돌려주는 dict: stop / views / capture_failed / neighbors_missing.
     """
@@ -96,9 +102,6 @@ def walk(provider, cfg, start_pano, bearing: float, max_views: int,
         for hdg, nb in cands:
             # 예산은 노드 경계가 아니라 **후보마다** 본다 — 한 지점이 최대
             # max_candidates 장이라 경계에서만 보면 통째로 넘겨서 찍는다
-            if n >= max_views:
-                stop, done = "max_views", True
-                break
             if time.time() > deadline:
                 stop, done = "time_budget", True
                 break
@@ -144,7 +147,7 @@ def main() -> int:
         print(f"✗ {e}", file=sys.stderr)
         return 2
 
-    print(f"provider={prov.name}  start=({lat},{lng})  목표 {st.collect.max_views}장 · "
+    print(f"provider={prov.name}  start=({lat},{lng})  "
           f"반경 {cfg.max_distance_m:.0f}m · 최대 {cfg.max_seconds:.0f}s\n"
           f"폴더: {out_dir}\n")
 
@@ -205,12 +208,11 @@ def main() -> int:
             mf.flush()      # 중간에 죽어도 여기까지는 쓸 수 있는 대장이 남는다
             if n % 25 == 0:
                 el = time.time() - t0
-                print(f"  {n:>4}/{st.collect.max_views}장 · {el:.0f}s · "
-                      f"{el / n:.2f}s/장", flush=True)
+                print(f"  {n:>4}장 · {el:.0f}s · {el / n:.2f}s/장", flush=True)
             return True
 
         try:
-            r = walk(prov, cfg, start_pano, st.run.bearing, st.collect.max_views,
+            r = walk(prov, cfg, start_pano, st.run.bearing,
                      on_view, deadline=t0 + cfg.max_seconds)
         except ProviderError as e:
             print(f"✗ provider_error: {e}", file=sys.stderr)

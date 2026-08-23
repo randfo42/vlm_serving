@@ -59,8 +59,8 @@ def _graph():
     }
 
 
-def _collected(provider, cfg, max_views, bearing=0.0):
-    """walk 가 밟는 (지점, 방위) 를 순서대로."""
+def _collected(provider, cfg, bearing=0.0):
+    """walk 가 밟는 (지점, 방위) 를 순서대로. 예산 없이 끝까지."""
     mod = _load()
     seen = []
 
@@ -68,8 +68,30 @@ def _collected(provider, cfg, max_views, bearing=0.0):
         seen.append((pano.pano_id, round(hdg, 1)))
         return True
 
-    r = mod.walk(provider, cfg, provider.start, bearing, max_views,
+    r = mod.walk(provider, cfg, provider.start, bearing,
                  on_view, deadline=float("inf"))
+    return seen, r
+
+
+def _collected_until(provider, cfg, allow: int, monkeypatch, bearing=0.0):
+    """`allow` 장에서 **시간 예산**이 끊도록 시계를 조작한다.
+
+    장수 상한을 없앤 뒤 예산 축은 시간과 거리 둘뿐이다. 실제 시계로는 시간
+    쪽을 못 재고(테스트가 1초도 안 걸린다) 그러면 예산의 절반이 무검증으로
+    남는다. 캡처 1건 = 1초로 놓고 deadline 을 그 사이에 둔다.
+    """
+    mod = _load()
+    seen = []
+    now = [0.0]
+
+    def on_view(pano, hdg, n, depth):
+        seen.append((pano.pano_id, round(hdg, 1)))
+        now[0] += 1.0
+        return True
+
+    monkeypatch.setattr(mod.time, "time", lambda: now[0])
+    r = mod.walk(provider, cfg, provider.start, bearing,
+                 on_view, deadline=allow - 0.5)
     return seen, r
 
 
@@ -84,7 +106,7 @@ def test_explore_와_같은_순서로_같은_화각을_찍는다():
     res = explore(ex_prov, Client(ex_prov, verdicts), (37.5, 127.0), 0.0, cfg)
     expected = [(p["from_pano"], p["heading"]) for p in res.probes]
 
-    got, r = _collected(Provider(_graph()), cfg, max_views=10_000)
+    got, r = _collected(Provider(_graph()), cfg)
 
     assert got == expected
     assert r["views"] == len(expected)
@@ -110,26 +132,40 @@ def test_판정이_전부_뒤집혀도_같은_것을_찍는다():
     all_false = probes(dict.fromkeys(keys, False))
     assert all_true == all_false
 
-    got, _ = _collected(Provider(_graph()), cfg, max_views=10_000)
+    got, _ = _collected(Provider(_graph()), cfg)
     assert got == all_true
 
 
-def test_max_views_에서_정확히_멈춘다():
+def test_장수로는_안_멈춘다(monkeypatch):
+    """⚠️ 한때 `max_views` 가 있었고 그것이 이 스크립트를 틀리게 만들었다.
+
+    예산 축은 explore 와 같은 둘뿐이어야 한다 — 시간과 거리. 장수로 끊으면
+    "explore 가 보냈을 바로 그 N 장" 이 아니게 된다: 2026-08-23 GS25 반경
+    500m 수집이 1000장에서 끊겨 398m 에서 멈췄고, 반경 안 2,481개 pano 중
+    35.6% 만 밟았다. 반경이 끊을 자리를 장수가 끊고 있었다.
+    """
     cfg = _cfg(max_distance_m=1000.0)
-    got, r = _collected(Provider(_graph()), cfg, max_views=4)
+    got, r = _collected(Provider(_graph()), cfg)
+    assert r["stop"] == "exhausted", "예산이 없으면 지도가 끝나야 끝난다"
+    assert len(got) == r["views"] > 4
+
+
+def test_시간이_다하면_time_budget_으로_멈춘다(monkeypatch):
+    cfg = _cfg(max_distance_m=1000.0)
+    got, r = _collected_until(Provider(_graph()), cfg, 4, monkeypatch)
     assert len(got) == 4
     assert r["views"] == 4
-    assert r["stop"] == "max_views"
+    assert r["stop"] == "time_budget"
 
 
-def test_max_views_는_노드_경계가_아니라_후보마다_걸린다():
+def test_예산은_노드_경계가_아니라_후보마다_걸린다(monkeypatch):
     """시작 지점의 후보가 3개인데 2장에서 끊으면 2장이어야 한다.
 
     노드 경계에서만 봤다면 3장이 나온다 — 한 지점이 최대 max_candidates
     장이라 그 차이가 12장까지 벌어진다.
     """
     cfg = _cfg(max_distance_m=1000.0)
-    got, _ = _collected(Provider(_graph()), cfg, max_views=2)
+    got, _ = _collected_until(Provider(_graph()), cfg, 2, monkeypatch)
     assert got == [("S", 0.0), ("S", 90.0)]
 
 
@@ -141,7 +177,7 @@ def test_반경은_찍는_지점을_자른다_목표가_아니라():
     밖이고, A 에서 뻗은 D(20m)·E 도 밖이라 목표로만 찍히고 확장은 안 된다.
     """
     cfg = _cfg(max_distance_m=15.0)
-    got, _ = _collected(Provider(_graph()), cfg, max_views=10_000)
+    got, _ = _collected(Provider(_graph()), cfg)
 
     # 찍은 자리는 반경 안 노드뿐이다 (C 는 이웃이 온 길뿐이라 후보가 없다)
     assert {p for p, _ in got} == {"S", "A"}
@@ -154,7 +190,7 @@ def test_반경은_찍는_지점을_자른다_목표가_아니라():
 def test_이웃을_못_얻으면_지어내지_않는다():
     """빈 이웃 목록은 '길 끝' 이 아니라 '로드 실패' 다 — 세고 넘어간다."""
     cfg = _cfg(max_distance_m=1000.0)
-    got, r = _collected(Provider({"S": []}), cfg, max_views=10_000)
+    got, r = _collected(Provider({"S": []}), cfg)
     assert got == []
     assert r["neighbors_missing"] == 1
     assert r["views"] == 0
@@ -171,7 +207,7 @@ def test_캡처_실패한_갈래는_확장하지_않는다():
         seen.append((pano.pano_id, round(hdg, 1)))
         return pano.pano_id != "S"      # 시작 지점 캡처가 전부 실패한다
 
-    r = mod.walk(prov, cfg, prov.start, 0.0, 10_000, on_view, deadline=float("inf"))
+    r = mod.walk(prov, cfg, prov.start, 0.0, on_view, deadline=float("inf"))
     # S 의 후보 3개를 시도하고 전부 실패했으므로 큐가 비어 끝난다
     assert seen == [("S", 0.0), ("S", 90.0), ("S", 180.0)]
     assert r["capture_failed"] == 3
@@ -179,10 +215,10 @@ def test_캡처_실패한_갈래는_확장하지_않는다():
     assert r["stop"] == "exhausted"
 
 
-@pytest.mark.parametrize("max_views", [1, 3, 5, 8, 10_000])
-def test_몇_장에서_끊든_앞부분은_같다(max_views):
-    """max_views 는 자르기만 한다 — 순서를 바꾸지 않는다."""
+@pytest.mark.parametrize("allow", [1, 3, 5, 8])
+def test_예산이_어디서_끊든_앞부분은_같다(allow, monkeypatch):
+    """예산은 자르기만 한다 — 순서를 바꾸지 않는다."""
     cfg = _cfg(max_distance_m=1000.0)
-    full, _ = _collected(Provider(_graph()), cfg, max_views=10_000)
-    got, _ = _collected(Provider(_graph()), cfg, max_views=max_views)
+    full, _ = _collected(Provider(_graph()), cfg)
+    got, _ = _collected_until(Provider(_graph()), cfg, allow, monkeypatch)
     assert got == full[:len(got)]

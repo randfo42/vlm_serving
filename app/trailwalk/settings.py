@@ -87,7 +87,8 @@ class VlmSettings:
 
 @dataclass(frozen=True)
 class CollectSettings:
-    max_views: int
+    # 장수 상한은 없다. 예산 축은 budget 의 둘(시간·거리)뿐이고, collect 는
+    # explore 와 **같은 조건에서 멈춰야** 같은 것을 모은 것이 된다
     out_dir: str
 
 

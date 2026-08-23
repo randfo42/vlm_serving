@@ -1,0 +1,48 @@
+# GS25 청계천패션2점 반경 500m — **explore 가 실제로 보낼 것** 그대로
+#
+#     python app/run_collect.py --config app/config/cheonggye-gs25-collect.yaml
+#
+# 여기 없는 값은 전부 정본(app/config/trailwalk.yaml)에서 온다.
+#
+# ⚠️ **cheonggye-collect.yaml 과 목적이 다르다. 헷갈리지 말 것.**
+#
+#   cheonggye-collect.yaml       하천 보행로 pano 를 직접 시드로 박는다.
+#                                산책로 **양성 표본**을 얻으려는 것이고,
+#                                explore 가 저기서 시작하는 일은 없다.
+#   cheonggye-gs25-collect.yaml  ← 이 파일. 사람이 준 좌표를 그대로 준다.
+#                                explore 와 **같은 스냅**을 거치므로 나오는
+#                                것이 곧 explore 가 서버로 보낼 것이다.
+#
+# 2026-08-23 실측 — GS25 반경 500m 안 pano 2,458개(노드 API 로 전수 조회):
+#
+#   차량 촬영 1,726 (70.2%)  ·  도보 촬영 732 (29.8%)
+#   그 중 하천 보행로 계열(103959…)은 **99개, 4.0%** 뿐이다
+#   st_type 은 이면도로 1,698개가 압도적. 도로명은 청계천로 236 · 마장로 163
+#   · 다산로 104 · 나머지는 골목(마장로9길 98 · 종로44길 91 · 퇴계로83길 90 …)
+#
+# 즉 **여기서 explore 를 돌리면 청계천이 아니라 창신동·신당동 골목이 나온다.**
+# 주소가 "청계천로 341" 인 것에 속으면 안 된다 — 그 좌표가 스냅되는 pano는
+# 1198162403 이고 shot_tool=202(차량) · st_type=이면도로 · 창신동 종로50라길이다.
+
+run:
+  provider: kakao
+
+  # GS25 청계천패션2점 (서울 종로구 청계천로 341). 카카오 로컬 키워드 검색
+  # 정확히 1건. **여기서 손대지 않는다** — 손대는 순간 explore 와 다른 것을
+  # 재게 된다. 거리 원점도 이 좌표에 스냅된 pano 다.
+  start: [37.5701281615647, 127.015528168071]
+
+  bearing: 0.0
+  save_images: false
+
+budget:
+  max_distance_m: 500.0
+
+  # 차량 계열은 격자형이라 갈래가 많다. 2026-08-23 실측으로 반경 안 pano 가
+  # 2,481개이고 2.2s/장이니 **반경을 다 소진하려면 1.5시간 넘게** 걸린다.
+  # 여유를 크게 둔다 — 여기 걸리면 반경을 못 채운 것이고 stop 이
+  # time_budget 으로 남아 그 사실이 보인다
+  max_seconds: 9000.0
+
+collect:
+  out_dir: "app/runs/images/cheonggye-gs25-500m"
