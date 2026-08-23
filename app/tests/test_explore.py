@@ -37,9 +37,15 @@ def run(provider, verdicts, bearing=0.0, client=None, **cfg):
 
     기본값을 여기 다시 적지 않는 것이 요점이다 — 테스트가 자기만의 기본값을
     들고 있으면 설정 파일을 바꿔도 테스트는 예전 값으로 계속 통과한다.
+
+    예외가 하나 있다: **건너뛰기는 꺼 둔다** (`skip_steps=0`). 이 파일이
+    지키는 것은 "판정을 받은 뒤의 행동" 인데, 성글게 찍으면 그 행동이 아예
+    안 드러나서 무엇을 재는지 알 수 없는 테스트가 된다. 건너뛰기 자체는
+    tests/test_skip.py 가 보고, 거기서는 정본 값을 그대로 쓴다.
     """
     client = client or Client(provider, verdicts)
     base = ExploreConfig.from_settings(settings.SETTINGS)
+    cfg.setdefault("skip_steps", 0)
     return explore(provider, client, (37.5, 127.0), bearing, replace(base, **cfg))
 
 

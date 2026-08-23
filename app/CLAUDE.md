@@ -17,6 +17,7 @@ app/
   run_collect.py         # CLI 진입점 — explore 와 같은 순서로 캡처만 모은다 (VLM 없이)
   check_kakao.py         # 진단 — 로드뷰가 잡히고 실제로 그려지는지 (VLM 불필요)
   check_fov.py           # 진단 — 화각·화살표 측정 (VLM 불필요)
+  check_pano_census.py   # 진단 — 반경 안 pano 를 계열별로 전수 조사 (캡처 불필요)
 
   config/trailwalk.yaml  # ★ 기본값의 유일한 정본. 값마다 근거 주석
   prompts/system_v*.txt  # ★ 판정 기준의 유일한 진실. 바이트 고정 (v1·v2 도 보존)
@@ -56,6 +57,7 @@ app/
     report_eval.py       # run_eval 산출물 → 정확도 리포트
     plot_explore.py      # explore dump → SVG
     plot_course.py       # 코스 폴리라인 + 샘플 → SVG (검수용)
+    plot_collect.py      # 수집한 pano → 지도 위 점 SVG
 
   tests/                 # 전부 오프라인 · 1초 미만
   docs/                  # 20 설계 · 21 provider · 22 라벨 · 23 열린 질문 · 24 코스
