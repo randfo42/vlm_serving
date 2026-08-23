@@ -67,6 +67,14 @@ class CandidateSettings:
 
 
 @dataclass(frozen=True)
+class SkipSettings:
+    # 몇 노드를 찍고 몇 노드를 건너뛸지. **예산 축이 아니다** — 런을 멈추는
+    # 것은 여전히 시간과 거리 둘뿐이고, 이건 노드 하나의 비용을 줄인다.
+    run_steps: int
+    skip_steps: int
+
+
+@dataclass(frozen=True)
 class GeoSettings:
     snap_radius_m: float
 
@@ -162,6 +170,7 @@ class Settings:
     run: RunSettings
     budget: BudgetSettings
     candidates: CandidateSettings
+    skip: SkipSettings
     geo: GeoSettings
     vlm: VlmSettings
     collect: CollectSettings

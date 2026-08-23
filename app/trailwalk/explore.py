@@ -74,6 +74,27 @@ CLAUDE.md). 순서는 워커 수와 무관하게 지켜진다 — `resolve` 가 
 아니라 캡처다. 캡처만 따로 떠 두려면 `run_collect.py` 를 쓴다.
 
 손잡이는 `vlm.max_inflight` 이고 0 이 옛 동작이다 (→ 20-app-design.md).
+
+### 노드를 건너뛴다 (2026-08-23)
+
+`run_steps` 개를 찍고 `skip_steps` 개를 건너뛴다. 건너뛴 노드도 **이웃은 묻고
+확장한다** — 빠지는 것은 캡처와 판정뿐이라 그래프의 모양은 그대로다.
+
+싼 이유가 실측에 있다: 노드 하나가 캡처까지 하면 2.07초인데 이웃만 물으면
+0.10초다 (2026-08-23 약수역사거리). 즉 건너뛴 노드는 20분의 1 값이다.
+
+**예산 축이 아니다.** 런을 멈추는 것은 여전히 시간과 거리 둘뿐이고(위 참조),
+이건 노드 하나의 비용을 줄인다. 한때 있던 `max_views` 와 성격이 다르다 —
+그건 "몇 장 모으면 그만둔다" 라 반경을 다 안 돌고 끝났다.
+
+갈림길(갈래 ≥ 2)에서는 주기와 무관하게 전부 찍는다. 왜 그런지와 왜 끄는
+손잡이가 없는지는 아래 `cadence` 에 있다.
+
+⚠️ **대가는 지면 커버리지다.** pano 간격이 ~10m 이고 노면을 판별할 수 있는
+거리가 4~20m 라(→ docs/23-open-questions.md §3 의 화각 실측에서 유도), 1/5 로
+성글게 하면 표본 간격이 ~50m 가 되어 **안 본 지면이 생긴다.** 판정이 빽빽할
+필요가 없는 용도(대략적 마킹·커버리지 조사)에서만 켤 것. 정확도를 재는
+런에서는 `skip_steps: 0` 이다.
 """
 from __future__ import annotations
 
@@ -103,18 +124,36 @@ class ExploreConfig:
     # 답을 안 받은 채 서버에 띄워 둘 판정 수. 캡처와 VLM 을 겹치게 하는 손잡이다
     max_inflight: int
 
+    # 찍을 노드와 건너뛸 노드의 주기 (→ 아래 `cadence`). 건너뛴 노드도 이웃은
+    # 묻고 확장한다 — 그래프는 그대로고 판정만 성글어진다
+    run_steps: int
+    skip_steps: int
+
     # 캡처한 바이트를 서버로 보낼 때의 규칙 (크기·품질). 루프가 imaging 에
     # 넘긴다 — 모듈 상수로 읽게 두면 --config 가 무시된다
     image: object
 
     @classmethod
     def from_settings(cls, s) -> ExploreConfig:
+        # 타입은 settings 가 보지만 의미는 여기서 본다. run_steps 가 0 이면
+        # 갈림길 말고는 아무것도 안 찍는 런이 조용히 돌고, 리포트에서는 그냥
+        # 판정이 적은 런으로 보인다 — 이 레포가 막으려는 실패 방식이다.
+        if s.skip.run_steps < 1:
+            raise settings.SettingsError(
+                f"skip.run_steps 는 1 이상이어야 한다 ({s.skip.run_steps}).\n"
+                f"  0 이면 갈림길 외에는 아무 판정도 안 받는다. skip 을 끄려면\n"
+                f"  skip_steps 를 0 으로 둘 것 — 그러면 전부 찍는다.")
+        if s.skip.skip_steps < 0:
+            raise settings.SettingsError(
+                f"skip.skip_steps 는 0 이상이어야 한다 ({s.skip.skip_steps}). 0 = 안 건너뛴다.")
         return cls(
             max_seconds=s.budget.max_seconds,
             max_distance_m=s.budget.max_distance_m,
             max_candidates=s.candidates.max_candidates,
             snap_radius_m=s.geo.snap_radius_m,
             max_inflight=s.vlm.max_inflight,
+            run_steps=s.skip.run_steps,
+            skip_steps=s.skip.skip_steps,
             image=s.image,
         )
 
@@ -133,6 +172,9 @@ class ExploreResult:
     # log=None 으로 도는 호출(테스트·인프로세스 웹)에서 유일한 창구이기도 하다
     warnings: list[dict] = field(default_factory=list)
     calls: int = 0
+    # 방향을 안 물어본 노드 수 (→ `cadence`). 이웃은 묻고 확장했으므로
+    # 그래프에는 들어 있다 — nodes[].skipped 가 어느 것인지 말해준다
+    skipped: int = 0
     wall_s: float = 0.0
 
 
@@ -188,6 +230,37 @@ def _candidates(provider, pano: Pano, bearing: float, came_from: str | None,
     return [(n.heading, n) for n in fresh[:cfg.max_candidates]], True
 
 
+def cadence(pos: int, fork: bool, cfg: ExploreConfig) -> tuple[bool, int]:
+    """이 노드의 방향들을 찍을 것인가, 그리고 자식에게 물려줄 위치.
+
+    반환: (찍는다, 자식의 pos)
+
+    **그래프 모양만 본다 — 판정값을 읽지 않는다.** 그게 이 기능이 위의
+    "캡처와 VLM 을 겹친다" 를 안 깨는 이유다. 판정이 skip 여부를 정하는
+    설계였다면 답을 기다려야 하고 겹치기가 통째로 사라진다.
+
+    직선 구간에서는 `run_steps` 개를 찍고 `skip_steps` 개를 건너뛰기를
+    반복한다. pos 는 그 주기 안의 위치이고, 부모에서 자식으로 이어진다 —
+    **전역 카운터가 아니다.** BFS 는 여러 갈래를 번갈아 소비하므로 전역으로
+    세면 어느 갈래가 몇 번째인지가 큐 순서에 따라 달라지고, 그러면 같은
+    설정의 두 런이 다른 곳을 찍는다.
+
+    ### 갈림길은 언제나 찍는다 (끄는 손잡이 없음)
+
+    갈래가 둘 이상인 지점에서는 주기와 무관하게 **모든 방향을 찍는다.**
+    갈림길이야말로 "여기서 어디로 갈 수 있는가" 가 갈리는 곳이고, 거기서
+    건너뛰면 두 갈래가 무엇이었는지 영영 모른 채 둘 다 확장하게 된다.
+
+    끄는 손잡이를 두지 않는 이유는 `expand_non_trail` 을 지운 것과 같다 —
+    끄면 "갈림길은 본다" 가 정책이 아니게 되고, 끈 런과 안 끈 런을 비교할 수
+    없다. skip 을 통째로 끄려면 `skip.skip_steps: 0` 으로 두면 된다.
+
+    갈림길은 주기도 리셋한다. 새 갈래는 자기 시작점부터 다시 센다.
+    """
+    eff = 0 if fork else pos
+    return eff < cfg.run_steps, (eff + 1) % (cfg.run_steps + cfg.skip_steps)
+
+
 @dataclass
 class _Pending:
     """서버에 보내 놓고 아직 답을 안 받은 판정 하나.
@@ -219,6 +292,8 @@ class _Node:
     # 그 자리(_Pending)** 를 들고 있다가 큐에서 꺼낼 때 값을 받는다.
     # 시작 노드만 None (판정 없이 시작한다)
     found_by: _Pending | None = None
+    # 찍고/건너뛰기 주기 안의 위치 (→ `cadence`). 부모에게서 물려받는다
+    pos: int = 0
 
 
 def explore(provider, client, start: tuple[float, float], start_bearing: float = 0.0,
@@ -336,6 +411,36 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
             resolve(pending.popleft())
 
 
+    def note_abort(step: int) -> None:
+        """첫 VLM 실패를 경고와 stop_reason 으로 승격한다.
+
+        **두 자리에서 부른다** — 찍는 노드와 건너뛰는 노드. 건너뛰는 쪽에도
+        있어야 하는 이유는 그쪽도 `pump` 로 실패를 알아채기 때문이다. 여기서
+        안 끊으면 서버가 죽은 뒤에도 건너뛰기 구간이 끝날 때까지 큐를 계속
+        넓힌다 (skip_steps 만큼).
+
+        한때 이 실패들은 stop_reason 을 세팅한 **직후 raise** 했다. 그 res 는
+        호출자에게 반환되지 않으므로 런로그에는 "aborted" 가 남았다 — 세팅한
+        값이 아무도 못 읽는 객체 위에 있었다. 시끄럽게 죽는 역할은 러너가
+        stop_reason 을 보고 맡는다.
+        """
+        if log:
+            log.event(abort["code"], step=step, error=abort["error"])
+        warn(abort["code"], error=abort["error"])
+        res.stop_reason = abort["code"]
+
+    def unwalked(node: _Node, rest, reason: str) -> list[dict]:
+        """아직 큐에 안 넣은 후보들을 frontier 형태로.
+
+        **판정을 안 받았을 뿐 갈래는 갈래다.** 여기서 버리면 그 갈래는 큐에도
+        frontier 에도 없어 이어서 탐색할 때 입력으로 안 들어온다 — 파일 위
+        "예산에 걸려 못 간 갈래는 버리지 않는다" 가 그 자리에서만 깨진다.
+        예산·중단으로 노드를 중간에 접는 자리 **전부**가 이걸 부른다.
+        """
+        return [{"from_pano": node.pano.pano_id, "pano_id": n.pano_id,
+                 "lat": n.lat, "lng": n.lng,
+                 "depth": node.depth + 1, "reason": reason} for _h, n in rest]
+
     def leftover(node: _Node, reason: str) -> dict:
         """예산에 걸려 못 간 큐 항목을 frontier 형태로."""
         return {"from_pano": node.came_from, "pano_id": node.pano.pano_id,
@@ -386,9 +491,12 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
         # 기다리면 다음 캡처가 그만큼 늦어져 겹치기가 통째로 사라진다 —
         # 실제로 그렇게 짰다가 속도가 하나도 안 붙었다. 자리만 잡아 두고
         # 런 끝에 채운다.
+        # skipped 와 is_trail 은 **다른 것**이다: is_trail 은 부모에서 이 노드로
+        # 들어온 간선의 판정이고, skipped 는 이 노드에서 나가는 방향들을
+        # 물어봤는가다. 건너뛴 부모에서 온 노드는 is_trail 이 None 이다
         row = {"pano_id": node.pano.pano_id, "lat": node.pano.lat,
                "lng": node.pano.lng, "depth": node.depth,
-               "parent": node.came_from, "is_trail": None}
+               "parent": node.came_from, "is_trail": None, "skipped": False}
         res.nodes.append(row)
         node_slots.append((row, node.found_by))
 
@@ -410,6 +518,29 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
             res.frontier.append(leftover(node, "neighbors_missing"))
             continue
 
+        # 이 노드의 방향들을 찍을 것인가. 갈래가 둘 이상이면 주기와 무관하게
+        # 전부 찍는다 (→ `cadence`). 판정값은 여기에 안 들어온다
+        shoot, child_pos = cadence(node.pos, len(cands) >= 2, cfg)
+        if not shoot:
+            # 후보가 없으면 건너뛴 것이 아니라 **갈 곳이 없는 것**이다. 둘을
+            # 한 카운터에 섞으면 "판정이 적은 이유가 건너뛰기인가 막다른
+            # 길인가" 를 결과만 보고 알 수 없다 — 이 카운터의 존재 이유가 그건데
+            if cands:
+                res.skipped += 1
+                row["skipped"] = True
+            # 띄워 둔 답을 놀리지 않는다. 건너뛰기가 길게 이어지면 실패를
+            # 그만큼 늦게 알게 되고, 그 사이 경고가 더 쌓인다 (→ pump)
+            pump(cfg.max_inflight)
+            if abort:
+                # 찍는 노드와 같은 처리를 여기서도 해야 한다. 안 그러면 서버가
+                # 죽은 것을 알고도 건너뛰기 구간이 끝날 때까지 큐를 계속 넓힌다
+                note_abort(node.depth)
+                # 이 노드의 후보는 아직 큐에 안 들어갔다 — drain() 만으로는
+                # 안 잡힌다. 넣지 않으면 이 갈래가 통째로 사라진다
+                res.frontier += unwalked(node, cands, res.stop_reason)
+                res.frontier += drain()
+                break
+
         budget_hit = False
         for i, (hdg, nb) in enumerate(cands):
             # 시간은 노드 경계가 아니라 **후보마다** 본다. 한 노드의 후보가
@@ -417,40 +548,38 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
             # 그 노드 하나가 통째로 예산을 넘겨 실행된다.
             if time.time() - t0 > cfg.max_seconds:
                 res.stop_reason = "time_budget"
-                # 못 물은 후보들도 frontier 다 — 판정을 안 받았을 뿐 갈래는 갈래다
-                for _h2, n2 in cands[i:]:
-                    res.frontier.append({
-                        "from_pano": node.pano.pano_id, "pano_id": n2.pano_id,
-                        "lat": n2.lat, "lng": n2.lng,
-                        "depth": node.depth + 1, "reason": res.stop_reason})
+                res.frontier += unwalked(node, cands[i:], res.stop_reason)
                 budget_hit = True
                 break
 
-            pd = submit(node.pano, hdg, node.depth, nb)
-            if pd is None:
-                # 캡처 실패는 판정이 아니다. probes 에 넣으면 "아니오" 와 섞인다 —
-                # 이 레포의 사고는 전부 그런 혼동에서 났다. 로그(capture_failed)만 남긴다
-                continue
+            pd = None
+            if shoot:
+                pd = submit(node.pano, hdg, node.depth, nb)
+                if pd is None:
+                    # 캡처 실패는 판정이 아니다. probes 에 넣으면 "아니오" 와 섞인다 —
+                    # 이 레포의 사고는 전부 그런 혼동에서 났다. 로그(capture_failed)만 남긴다
+                    continue
 
             # 판정을 기다리지 않고 그래프를 민다. 판정값은 이 둘 중 어느 것도
             # 바꾸지 않는다 — 그게 겹치기가 성립하는 유일한 이유다.
             # 첫 접근의 판정이 그 pano 의 판정이다 — 참이든 거짓이든 다시 묻지 않는다
+            #
+            # **건너뛴 노드도 여기까지는 똑같이 온다.** 이웃을 묻고 확장하는
+            # 것은 그대로이고 캡처와 판정만 빠진다 — 그래서 그래프의 모양은
+            # skip 설정과 무관하다 (→ tests/test_skip.py)
             visited.add(nb.pano_id)
-            q.append(_Node(depth=node.depth + 1, bearing=hdg,
+            q.append(_Node(depth=node.depth + 1, bearing=hdg, pos=child_pos,
                            came_from=node.pano.pano_id, found_by=pd,
                            pano=Pano(pano_id=nb.pano_id, lat=nb.lat, lng=nb.lng)))
 
+            if not shoot:
+                continue
             # 띄워 둔 것이 상한을 넘으면 여기서 받는다. 다음 캡처는 그동안 돈다.
             pump(cfg.max_inflight)
             if abort:
-                # 한때 이 실패들은 stop_reason 을 세팅한 **직후 raise** 했다.
-                # 그 res 는 호출자에게 반환되지 않으므로 런로그에는 "aborted"
-                # 가 남았다 — 세팅한 값이 아무도 못 읽는 객체 위에 있었다.
-                # 시끄럽게 죽는 역할은 러너가 stop_reason 을 보고 맡는다.
-                if log:
-                    log.event(abort["code"], step=node.depth, error=abort["error"])
-                warn(abort["code"], error=abort["error"])
-                res.stop_reason = abort["code"]
+                note_abort(node.depth)
+                # i 번째는 위에서 큐에 들어갔다. 그 뒤는 아직 안 밟았다
+                res.frontier += unwalked(node, cands[i + 1:], res.stop_reason)
                 budget_hit = True
                 break
 
@@ -466,9 +595,6 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
         if pd is not None:
             row["is_trail"] = pd.is_trail
     if abort and not res.stop_reason:
-        if log:
-            log.event(abort["code"], step=0, error=abort["error"])
-        warn(abort["code"], error=abort["error"])
-        res.stop_reason = abort["code"]
+        note_abort(0)
 
     return done(res.stop_reason or "exhausted")
