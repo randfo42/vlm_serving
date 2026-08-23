@@ -4,11 +4,12 @@
     python app/eval/plot_collect.py app/runs/images/cheonggye-500m -o /tmp/c.svg
     python app/eval/plot_collect.py app/runs/images/{a,b} --nodes nodes.json -o /tmp/c.svg
 
-`--nodes` 는 반경 안 pano 전수 조사(노드 API BFS 결과)다. 주면 **배경**으로
+`--nodes` 는 `check_pano_census.py -o` 가 낸 반경 전수 조사다. 주면 **배경**으로
 깔린다 — "반경 안에 있는 것" 위에 "실제로 모은 것" 이 겹쳐 그려진다.
 이 둘의 차이가 이 그림의 요점이다: **로드뷰 pano 는 계열별로 끊긴 그래프라
 시작점 하나가 어디까지 갈 수 있는지를 정한다** (→ docs/23-open-questions.md §7).
-2026-08-23 GS25 반경 500m 에서 계열이 24개였고 하천 보행로는 4.0% 였다.
+2026-08-23 GS25 반경 500m 에서 계열이 24개였고 하천 보행로는 4.8% 였다
+(2,481개 중 118개). 그 census 도 시드에 의존한다 — 같은 §7 참고.
 
 점 하나 = **pano 하나**다. 한 pano 에서 여러 화각을 찍어도 점은 하나다
 (그 수는 툴팁에 있다).
