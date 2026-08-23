@@ -25,12 +25,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from eval.plot_course import TILE, fetch_tile, merc
+from labels.pano_meta import is_walk
 
 INK = "#1a1a1a"
-WALK = "#0ca30c"      # 도보 촬영 (shot_tool ∉ CAR_TOOLS)
+WALK = "#0ca30c"      # 도보 촬영 (labels.pano_meta.is_walk)
 CAR = "#c26a1c"       # 차량 촬영
 SETS = ["#1668d6", "#c0339a", "#0e9c8f", "#8a4fd8"]   # 수집 세트별
-CAR_TOOLS = {"102", "200", "202"}
 
 
 def load_manifest(d: Path) -> dict:
@@ -97,7 +97,7 @@ def render(sets: list[dict], nodes: dict | None, with_map: bool = True) -> str:
             if n["d"] > nodes["radius_m"]:
                 continue
             a, b = sxy(n["lat"], n["lng"])
-            walk = n["tool"] not in CAR_TOOLS
+            walk = is_walk(n["tool"])
             o.append(f'<circle cx="{a:.1f}" cy="{b:.1f}" r="1.7" '
                      f'fill="{WALK if walk else CAR}" opacity="0.5"/>')
 
@@ -122,7 +122,7 @@ def render(sets: list[dict], nodes: dict | None, with_map: bool = True) -> str:
     yy = 46
     if nodes:
         ins = [n for n in nodes["nodes"].values() if n["d"] <= nodes["radius_m"]]
-        nw = sum(1 for n in ins if n["tool"] not in CAR_TOOLS)
+        nw = sum(1 for n in ins if is_walk(n["tool"]))
         o.append(f'<circle cx="22" cy="{yy - 4}" r="3" fill="{WALK}" opacity="0.7"/>')
         o.append(label(32, yy, f"반경 안 도보 {nw}", 11)); yy += 16
         o.append(f'<circle cx="22" cy="{yy - 4}" r="3" fill="{CAR}" opacity="0.7"/>')

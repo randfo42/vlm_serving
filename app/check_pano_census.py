@@ -55,7 +55,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from labels.pano_meta import CAR_TOOLS, fetch_node
+from labels.pano_meta import fetch_node, is_walk
 
 from trailwalk.geo import haversine_m
 
@@ -91,13 +91,16 @@ def census(center: tuple[float, float], radius_m: float, seeds: list[str],
                     "tool": str(n.get("shot_tool")), "st_type": n.get("st_type"),
                     "st_name": n.get("st_name"), "addr": n.get("addr"),
                     "shot_date": n.get("shot_date")}
-        if d > radius_m:
-            continue
-        for sp in (n.get("spot") or []):
-            sid = str(sp["id"])
-            if sid not in seen:
-                seen.add(sid)
-                q.append(sid)
+        # 반경 밖은 확장하지 않는다. **다만 쓰로틀은 건너뛰지 않는다** —
+        # 여기서 continue 하면 경계 노드가 연속으로 나오는 구간에서 요청이
+        # 쓰로틀 없이 몰려 나가고, 레이트리밋 실패가 하필 반경 경계에
+        # 편향돼 생긴다. 이 스크립트가 막으려는 언더카운트를 스스로 만든다.
+        if d <= radius_m:
+            for sp in (n.get("spot") or []):
+                sid = str(sp["id"])
+                if sid not in seen:
+                    seen.add(sid)
+                    q.append(sid)
         if len(out) % every == 0:
             print(f"  {len(out)}개 · {time.time() - t0:.0f}s", flush=True)
         time.sleep(pause)
@@ -112,7 +115,9 @@ def report(c: dict) -> None:
     if not ins:
         print("반경 안에 pano 가 없다 — 시드가 반경 밖이거나 커버리지가 없다")
         return
-    walk = sum(1 for v in ins.values() if v["tool"] not in CAR_TOOLS)
+    # 도보 판정은 반드시 is_walk 로. 여기서 다시 구현하면 그쪽만
+    # 고쳤을 때 이 스크립트가 조용히 안 따라온다 (→ pano_meta 독스트링)
+    walk = sum(1 for v in ins.values() if is_walk(v["tool"]))
     print(f"\n시드 {len(c['seeds'])}개 · 조회 {c['fetched']} · "
           f"반경 {R:.0f}m 안 **{len(ins)}개** ({c['elapsed_s']:.0f}s)")
     print(f"  도보 {walk} ({100 * walk / len(ins):.1f}%) · 차량 {len(ins) - walk}")
@@ -132,7 +137,7 @@ def report(c: dict) -> None:
     print(f"\n계열 {len(fam)}개 (pano id 앞 6자리):")
     for pre, n in fam.most_common():
         tool = next(v["tool"] for k, v in ins.items() if k.startswith(pre))
-        kind = "차량" if tool in CAR_TOOLS else "도보"
+        kind = "도보" if is_walk(tool) else "차량"
         print(f"  {pre}…  {kind}  tool {tool:>4}  {n:>5}개  "
               f"({100 * n / len(ins):4.1f}%)")
 
