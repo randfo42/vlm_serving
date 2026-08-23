@@ -122,6 +122,11 @@ class KakaoSettings:
     render_settle_ms: int
     render_settle_stable: int
     render_settle_tries: int
+    # pano 하나가 쓸 수 있게 되기까지 기다리는 최대 시간과 폴링 간격.
+    # **두 자리를 함께 정한다** — `__show` 의 전환 데드라인과 `neighbors()` 의
+    # 노드 JSON 대기다. 둘 다 "SDK 가 이 pano 를 받아왔는가" 를 기다린다.
+    pano_wait_ms: int
+    pano_poll_ms: int
 
 
 @dataclass(frozen=True)
