@@ -249,6 +249,15 @@ def test_모르는_범주는_설정_로드에서_터진다():
         VlmClient(settings=bad)
 
 
+def test_모르는_이름은_이름부터_말해_준다():
+    """설정은 문자열 타입만 검사하므로 오타가 여기까지 온다. 생짜 KeyError 가
+    나면 무엇이 잘못됐는지도, 뭘 쓸 수 있는지도 안 나온다."""
+    with pytest.raises(P.PromptDriftError, match="system_v4"):
+        VlmClient(system_version="system_v5", schema_name="surface")
+    with pytest.raises(ValueError, match="surface_eval"):
+        VlmClient(schema_name="surfaces")
+
+
 def test_프롬프트와_스키마의_짝이_안_맞으면_터진다():
     """짝이 안 맞으면 HTTP 200 에 파싱도 성공하고 값만 환각이다."""
     with pytest.raises(ValueError, match="짝이 아니다"):

@@ -89,15 +89,26 @@ class VlmClient:
         # --config 로 expected_image_tokens 를 바꾼 런이 옛 하한을 쓴다
         self.min_prompt_tokens = s.image.min_prompt_tokens
         self.schema_name = schema_name
-        self.schema = P.SCHEMAS[schema_name]
-        # 범주형 스키마면 is_trail 을 서버가 아니라 여기서 만든다.
-        # 판정할 때마다 스키마 이름을 다시 보지 않고 한 번에 정해 둔다.
+        # 이름부터 본다. 설정은 문자열 타입만 검사하므로 오타는 여기까지 온다 —
+        # dict 를 그냥 인덱싱하면 `KeyError: 'system_v5'` 한 줄이 전부고,
+        # 무엇이 잘못됐는지도 뭘 쓸 수 있는지도 안 알려준다.
+        if system_version not in P.COMPATIBLE:
+            raise P.PromptDriftError(
+                f"모르는 프롬프트 버전 {system_version!r}. "
+                f"아는 것: {', '.join(sorted(P.COMPATIBLE))}")
+        if schema_name not in P.SCHEMAS:
+            raise ValueError(
+                f"모르는 스키마 {schema_name!r}. "
+                f"아는 것: {', '.join(sorted(P.SCHEMAS))}")
         if schema_name not in P.COMPATIBLE[system_version]:
             raise ValueError(
                 f"프롬프트 {system_version} 와 스키마 {schema_name!r} 는 짝이 아니다.\n"
                 f"  쓸 수 있는 것: {P.COMPATIBLE[system_version]}\n"
                 f"  짝이 안 맞으면 에러가 아니라 환각이 난다 — 모델이 프롬프트에\n"
                 f"  없는 필드를 지어내고 서버가 형식을 맞춰 준다.")
+        self.schema = P.SCHEMAS[schema_name]
+        # 범주형 스키마면 is_trail 을 서버가 아니라 여기서 만든다.
+        # 판정할 때마다 스키마 이름을 다시 보지 않고 한 번에 정해 둔다.
         self.by_surface = schema_name in P.SURFACE_SCHEMAS
         self.trail_surfaces = frozenset(s.vlm.trail_surfaces)
         # 오타를 여기서 터뜨린다. 안 막으면 `park_paths` 하나가 그 범주를
