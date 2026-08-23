@@ -80,6 +80,9 @@ class VlmSettings:
     timeout_s: int
     fatal_500_streak: int
     max_inflight: int
+    # camera_surface 범주 중 산책로로 셀 것. 범주형 스키마(surface·surface_eval)
+    # 에서만 쓰인다 — 불리언 스키마(walk·eval)는 서버가 낸 is_trail 을 그대로 쓴다.
+    trail_surfaces: list[str]
 
 
 @dataclass(frozen=True)
@@ -194,6 +197,12 @@ def _coerce(v: Any, hint: Any, where: str, name: str):
                 f"{where}.{name}: 원소가 {len(want)}개여야 하는데 {len(v)}개다 ({v!r})")
         return tuple(_coerce(x, w, where, f"{name}[{i}]")
                      for i, (x, w) in enumerate(zip(v, want, strict=True)))
+
+    if origin is list:                                   # `list[str]`
+        (want,) = get_args(hint)
+        if not isinstance(v, list):
+            raise bad("리스트")
+        return [_coerce(x, want, where, f"{name}[{i}]") for i, x in enumerate(v)]
 
     if hint is bool:
         # bool 을 먼저 본다. 파이썬에서 bool 은 int 의 하위형이라 순서가 뒤집히면

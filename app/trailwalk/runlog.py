@@ -71,6 +71,12 @@ class RunLog:
             "pano_id": pano_id, "lat": round(lat, 7), "lng": round(lng, 7),
             "heading": round(heading, 1),
             "is_trail": verdict.is_trail, "confidence": verdict.confidence,
+            # 범주형 스키마(v4)에서만 있다. is_trail 은 이 값에서 **유도된
+            # 것**이라(vlm.trail_surfaces), 원본을 안 남기면 경계를 옮겼을 때
+            # 옛 런을 다시 해석할 수 없다 — 다시 판정을 받아야 한다.
+            # None 이면 필드 자체가 없어 v1~v3 런로그와 바이트가 같다.
+            **({"camera_surface": verdict.camera_surface}
+               if verdict.camera_surface else {}),
             "prompt_tokens": verdict.prompt_tokens,
             "cached_tokens": verdict.cached_tokens,
             "completion_tokens": verdict.completion_tokens,

@@ -78,6 +78,7 @@ class Verdict:
     def __init__(self, is_trail):
         self.is_trail = is_trail
         self.confidence = None
+        self.camera_surface = None
 
 
 class Provider:

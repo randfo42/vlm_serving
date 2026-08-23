@@ -109,6 +109,7 @@ def test_renamed_file_fatal(tmp_path):
 @dataclass
 class FakeVerdict:
     is_trail: bool = True
+    camera_surface: str | None = None
     confidence: int | None = 9
     prompt_tokens: int = 276
     cached_tokens: int = 66

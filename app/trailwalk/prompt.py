@@ -9,11 +9,12 @@
     app/prompts/system_v*.txt   ← 판정 기준 (사람이 고치는 곳)
     PINS                        ← 그 파일이 의도치 않게 변한 것을 잡는 핀
 
-### 세 버전은 서로 다른 질문이다
+### 네 버전은 서로 다른 질문이다
 
     v1  "이 사진에 산책로가 보이는가"
     v2  "카메라가 산책로 위에 서 있는가"      — 너무 엄격해서 폐기
-    v3  같은 질문, 폭·노면 조건을 뺀 것        ← 기본값
+    v3  같은 질문, 폭·노면 조건을 뺀 것
+    v4  "카메라 발밑이 무엇인가" (범주)        ← 기본값
 
 원래 v1 은 둘 중 무엇인지 말한 적이 없었고, 그래서 프레임 안에 길이 보이지만
 카메라는 차도 위에 있는 장면에서 판정이 갈렸다. 모델이 틀린 게 아니라
@@ -28,6 +29,19 @@ v2 는 그 차도 오판은 고쳤지만 **진짜 산책로를 거부했다**(24
 금지 목록에 넣은 "streambed" 와 "continuous walkable surface" 였다. 청계천
 산책로는 하천 바닥에 있고 폭이 1인용이며 노면이 돌·흙이라 그 조건에 걸린다.
 v3 는 폭·노면을 판정에서 빼고 "정의된 길이 카메라 아래로 이어지는가" 만 남겼다.
+
+v3 는 그 대가로 **골목을 전부 산책로로 셌다.** 골목은 "정의된 길이 카메라
+아래로 이어진다" 를 정확히 만족한다. 2026-08-23 에 약수동 500장의 True 판정
+8건을 눈으로 확인했더니 8건 전부 카메라가 차도 위였고, 그 중 여섯은 프레임
+안에 중앙선·빗금·30 표지·어린이보호구역 노면표시가 찍혀 있었다 — **차가
+다닌다는 증거가 사진 안에 있는데 프롬프트가 그걸 보라고 한 적이 없었다.**
+
+v1·v2·v3 는 느슨/엄격 한 축에서만 왕복했다. v4 는 축을 하나 더 놓는다:
+**이 노면을 차와 공유하는가.** 그리고 불리언을 버리고 범주(`camera_surface`)를
+받는다 — 어디가 경계인지(보행자우선 골목을 산책로로 셀 것인가)는 라벨 없이
+못 정하므로, 그 경계를 프롬프트 문장이 아니라 **설정**에 둔다
+(`vlm.trail_surfaces`). 경계를 옮겨도 프롬프트 버전이 안 바뀌고, 이미 받아
+둔 판정을 다시 해석할 수 있다.
 
 **어느 버전도 지우지 않는다.** 이전 런이 어느 기준으로 난 결과인지 알 수 있어야
 하고, 같은 구간에서 정의끼리 비교할 수 있어야 한다.
@@ -58,8 +72,9 @@ PINS = {
     "system_v1": "8c97695d6d2e506917bffc3f4a327737e9385bf3de5cc13a755334b15b8dbab6",
     "system_v2": "ad67dd1827767304752f0d31e2f415b3027bf6b219e8d921f2fe358cdadc6f81",
     "system_v3": "cf0dfb7e79dad20929bf51803e3e4c9cb18982c5c6450e92ab4c24e99855b893",
+    "system_v4": "e6831068faa826a4905c74f38dea7ed43285adfd3f30051fe54dc28d71920b0d",
 }
-DEFAULT_VERSION = "system_v3"
+DEFAULT_VERSION = "system_v4"
 
 
 class PromptDriftError(RuntimeError):
@@ -98,13 +113,31 @@ def load(version: str = DEFAULT_VERSION) -> str:
 # decode 는 ~37 ms/token 이고 출력 토큰 수에만 비례한다 (서빙 실측).
 # 필드 하나가 곧 지연이므로 용도별로 최소 스키마를 따로 둔다.
 #
-#   walk — 탐색 루프용. 스텝마다 여러 화각을 물어야 하므로 가장 싸야 한다.
-#          실측 17 출력토큰 / 620 ms.
-#   eval — 평가용. confidence 로 임계값을 움직여 ROC 를 그린다.
-#          운영점을 정하려면 이게 필요하다. 실측상 +1 s 남짓.
+#   walk         — v1~v3 용. is_trail 불리언 하나. 실측 17 출력토큰 / 620 ms.
+#   eval         — v1~v3 평가용. + confidence.
+#   surface      — v4 용 탐색 루프. camera_surface 범주 하나.
+#   surface_eval — v4 평가용. + confidence.
 #
 # confidence 를 0~10 정수로 둔 이유: 소수점 실수는 토큰을 더 먹는데
 # 임계값 스윕에 11 단계면 충분하다.
+#
+# ⚠️ **walk/eval 을 지우지 않는다.** v1~v3 로 난 런을 재현하려면 그 스키마가
+# 있어야 한다. v4 는 is_trail 을 아예 내지 않으므로 스키마도 별개다.
+
+# camera_surface 가 가질 수 있는 값 전부 (→ prompts/system_v4.txt).
+# 순서는 "차와 공유하는가" 로 정렬돼 있다 — 앞 둘이 차량 공유, 나머지가 보행.
+# 이 목록이 곧 열거형이라 서버의 strict json_schema 가 다른 값을 못 내게 한다.
+SURFACES = [
+    "roadway",         # 차량 + 노면표시·표지
+    "shared_alley",    # 차량, 차선 도색 없음 — 골목
+    "sidewalk",        # 차도 옆 보도. 폭·가로수 무관
+    "pedestrian_way",  # 차량 배제 — 볼라드·계단·폭 전체 보행포장
+    "park_path",       # 공원·숲·산
+    "waterside",       # 하천·수변 (하천 바닥 포함)
+    "open_ground",     # 정의된 길 없음 — 잔디·공터·자갈
+    "unclear",         # 노면을 못 봄
+]
+
 SCHEMAS = {
     "walk": {
         "type": "object",
@@ -121,6 +154,39 @@ SCHEMAS = {
         "required": ["is_trail", "confidence"],
         "additionalProperties": False,
     },
+    "surface": {
+        "type": "object",
+        "properties": {"camera_surface": {"type": "string", "enum": SURFACES}},
+        "required": ["camera_surface"],
+        "additionalProperties": False,
+    },
+    "surface_eval": {
+        "type": "object",
+        "properties": {
+            "camera_surface": {"type": "string", "enum": SURFACES},
+            "confidence": {"type": "integer", "minimum": 0, "maximum": 10},
+        },
+        "required": ["camera_surface", "confidence"],
+        "additionalProperties": False,
+    },
+}
+
+# 범주를 내는 스키마. is_trail 은 이 경우 서버가 아니라 **설정**이 정한다
+# (`vlm.trail_surfaces`) — VlmClient 가 유도한다.
+SURFACE_SCHEMAS = frozenset({"surface", "surface_eval"})
+
+# 프롬프트 버전 → 그 버전과 짝이 맞는 스키마.
+#
+# 짝이 안 맞으면 에러가 아니라 **환각**이 나온다. v4 에게 walk 스키마를 주면
+# 모델은 프롬프트에 나온 적 없는 `is_trail` 을 지어내고, 서버의 strict
+# json_schema 가 형식은 맞춰 주므로 HTTP 200 에 파싱도 성공한다. 이 레포가
+# 실제로 당한 사고와 같은 모양이다(confidence 를 스키마에만 넣었더니 모델이
+# "산책로다움" 점수로 해석했다 → tests/test_prompt.py).
+COMPATIBLE = {
+    "system_v1": ("walk", "eval"),
+    "system_v2": ("walk", "eval"),
+    "system_v3": ("walk", "eval"),
+    "system_v4": ("surface", "surface_eval"),
 }
 
 
