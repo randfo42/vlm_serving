@@ -218,3 +218,21 @@ def test_다른_버전_행이_LIMIT_예산을_먹지_않는다(tmp_path):
     conn.close()
     assert [r["pano_id"] for r in rows] == ["V6"], "매칭 pano 가 빠졌다"
     assert not truncated
+
+
+def test_모르는_버전은_404다(client):
+    # 빈 지도(200)로 조용히 넘어가면 "이 지역엔 없다" 와 구분이 안 된다
+    r = client.get("/api/panos", params={**BBOX, "prompt_version": "v6_typo"})
+    assert r.status_code == 404
+    assert "버전" in r.json()["detail"]
+    # run_id 경로도 같은 가드를 타야 한다 — 존재 확인 없이 [run_id] 를
+    # 돌려주면 정확히 같은 조용한 실패가 재현된다 (리뷰 지적)
+    r = client.get("/api/panos", params={**BBOX, "run_id": 99999})
+    assert r.status_code == 404
+
+
+def test_정적_페이지가_뜬다(client):
+    r = client.get("/")
+    assert r.status_code == 200 and "trailwalk" in r.text
+    assert client.get("/app.js").status_code == 200
+    assert client.get("/map.js").status_code == 200

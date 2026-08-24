@@ -495,7 +495,11 @@ def run_ids_for(conn: sqlite3.Connection, *, prompt_version: str | None = None,
     초록으로 만든다 — v3 의 골목 오탐이 정확히 그 모양이다.
     """
     if run_id is not None:
-        return [run_id]
+        # 존재 확인 없이 [run_id] 를 돌려주면 호출자의 "빈 집합 = 파라미터
+        # 오류" 가드가 무효가 된다 — 없는 런이 조용히 빈 지도가 되는 그 실패
+        row = conn.execute("SELECT 1 FROM run WHERE run_id = ?",
+                           (run_id,)).fetchone()
+        return [run_id] if row else []
     if prompt_version:
         return [r[0] for r in conn.execute(
             "SELECT run_id FROM run WHERE prompt_version = ?", (prompt_version,))]

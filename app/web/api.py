@@ -97,9 +97,15 @@ def create_app(st: settings_mod.Settings, db: Path) -> FastAPI:
         # 기본 필터 = 현재 프롬프트 버전. MAX 는 한 pano 안 방위들 사이의
         # 규칙이라, 버전을 가로질러 걸면 폐기된 버전의 오탐 하나가 그 점을
         # 영원히 초록으로 만든다 (→ store.run_ids_for)
-        ids = store.run_ids_for(
-            conn, prompt_version=None if run_id else
-            (prompt_version or st.vlm.prompt_version), run_id=run_id)
+        version = None if run_id else (prompt_version or st.vlm.prompt_version)
+        ids = store.run_ids_for(conn, prompt_version=version, run_id=run_id)
+        if not ids:
+            # 모르는 버전/런이 조용히 빈 지도가 되면 "이 지역엔 산책로가
+            # 없다" 와 구분이 안 된다 — 파라미터 오류는 에러로 말한다
+            what = f"run_id {run_id}" if run_id else f"버전 {version!r}"
+            raise HTTPException(
+                404, f"판정이 하나도 없는 {what} 다. "
+                     f"/api/versions · /api/runs 에서 있는 것을 확인할 것")
         rows, truncated = store.viewport(conn, s=s, w=w, n=n, e=e, run_ids=ids,
                                          limit=limit, with_headings=headings)
         return {"panos": rows, "truncated": truncated}
