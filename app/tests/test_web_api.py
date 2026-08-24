@@ -236,3 +236,25 @@ def test_정적_페이지가_뜬다(client):
     assert r.status_code == 200 and "trailwalk" in r.text
     assert client.get("/app.js").status_code == 200
     assert client.get("/map.js").status_code == 200
+
+
+def test_잡_생성_조회_취소(client):
+    r = client.post("/api/jobs", json={"lat": 37.55, "lng": 127.0,
+                                       "radius_m": 500})
+    assert r.status_code == 201
+    j = r.json()
+    assert j["state"] == "queued"
+    # max_seconds 를 안 주면 설정(budget)이 채운다 — 기본값의 정본은 yaml
+    assert j["max_seconds"] > 0
+    assert client.get(f"/api/jobs/{j['job_id']}").json()["state"] == "queued"
+    assert client.post(f"/api/jobs/{j['job_id']}/cancel").json()["state"] == "canceled"
+    assert client.get("/api/jobs").json()["jobs"][0]["job_id"] == j["job_id"]
+    assert client.post("/api/jobs/999/cancel").status_code == 404
+
+
+def test_잡_좌표_검증(client):
+    # 위경도를 뒤집어 넣는 것이 가장 흔한 실수다 — 422 로 즉시 잡는다
+    r = client.post("/api/jobs", json={"lat": 127.0, "lng": 37.55,
+                                       "radius_m": 500})
+    assert r.status_code == 422
+    assert "위경도" in r.json()["detail"]

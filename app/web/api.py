@@ -47,6 +47,16 @@ class LabelIn(BaseModel):
     heading: float | None = None      # None = 이 pano 전체 (기본)
 
 
+class JobIn(BaseModel):
+    lat: float
+    lng: float
+    bearing: float = 0.0
+    radius_m: float                   # 기본값은 프론트가 /api/config 로 받아 채운다
+    max_seconds: float | None = None  # None = 설정(budget.max_seconds)
+    config_path: str | None = None    # 레포 밖 절대경로 허용 — vlm.url 이 든 설정은
+    #                                   public 레포 밖(bench-runs/)에 산다
+
+
 def get_conn(request: Request):
     conn = store.connect(request.app.state.db)
     try:
@@ -87,7 +97,10 @@ def create_app(st: settings_mod.Settings, db: Path) -> FastAPI:
                 "center": list(st.run.start),
                 "prompt_version": st.vlm.prompt_version,
                 "min_nature_level": st.vlm.min_nature_level,
-                "require_footway": st.vlm.require_footway}
+                "require_footway": st.vlm.require_footway,
+                # 잡 폼의 기본값 — 정본은 설정이고 프론트는 채워 보여줄 뿐
+                "defaults": {"radius_m": st.budget.max_distance_m,
+                             "max_seconds": st.budget.max_seconds}}
 
     @app.get("/api/versions")
     def api_versions(conn=Depends(get_conn)):
@@ -178,6 +191,37 @@ def create_app(st: settings_mod.Settings, db: Path) -> FastAPI:
         return Response(content=lines, media_type="application/x-ndjson",
                         headers={"Content-Disposition":
                                  'attachment; filename="web_labels.jsonl"'})
+
+    @app.post("/api/jobs", status_code=201)
+    def api_post_job(request: Request, body: JobIn, conn=Depends(get_conn)):
+        st = request.app.state.settings
+        if not (33.0 < body.lat < 39.5 and 124.0 < body.lng < 132.0):
+            raise HTTPException(422, "좌표가 한반도 밖이다 — 위경도 순서를 확인")
+        if not (0 < body.radius_m <= 10000):
+            raise HTTPException(422, "반경은 0~10km 사이여야 한다")
+        return store.enqueue_job(
+            conn, start_lat=body.lat, start_lng=body.lng, bearing=body.bearing,
+            radius_m=body.radius_m,
+            max_seconds=body.max_seconds or st.budget.max_seconds,
+            config_path=body.config_path)
+
+    @app.get("/api/jobs")
+    def api_jobs(limit: int = Query(50, ge=1, le=500), conn=Depends(get_conn)):
+        return {"jobs": store.jobs_list(conn, limit)}
+
+    @app.get("/api/jobs/{job_id}")
+    def api_job(job_id: int, conn=Depends(get_conn)):
+        j = store.job_row(conn, job_id)
+        if j is None:
+            raise HTTPException(404, "모르는 잡이다")
+        return j
+
+    @app.post("/api/jobs/{job_id}/cancel")
+    def api_cancel_job(job_id: int, conn=Depends(get_conn)):
+        j = store.request_cancel(conn, job_id)
+        if j is None:
+            raise HTTPException(404, "모르는 잡이다")
+        return j
 
     @app.get("/api/health")
     def api_health(request: Request, conn=Depends(get_conn)):

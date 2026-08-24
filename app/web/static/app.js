@@ -58,6 +58,7 @@ function init() {
     schedule(0);
   });
   $("panel-close").addEventListener("click", () => closePanel());
+  wireJobs();
   schedule(0);
 }
 
@@ -306,4 +307,101 @@ async function saveLabel(panoId, action) {
 function closePanel() {
   $("panel").hidden = true;
   layer.select(null);
+}
+
+// ── 탐색 잡 — 우클릭으로 넣고, 좌하단 위젯으로 지켜본다 ────────────────────
+
+function wireJobs() {
+  kakao.maps.event.addListener(map, "rightclick", (e) =>
+    openJobForm(e.latLng.getLat(), e.latLng.getLng()));
+  $("jobs").hidden = false;
+  pollJobs();
+}
+
+function openJobForm(lat, lng) {
+  const d = cfg.defaults ?? { radius_m: 500, max_seconds: 3600 };
+  $("panel-body").innerHTML = `
+    <h3>여기서 탐색</h3>
+    <div class="muted">${lat.toFixed(6)}, ${lng.toFixed(6)}</div>
+    <div class="jobform">
+      <label>반경 (m) <input id="jf-radius" type="number" value="${d.radius_m}"></label>
+      <label>시간 상한 (s) <input id="jf-secs" type="number" value="${d.max_seconds}"></label>
+      <button class="go">큐에 넣기</button>
+      <div class="muted">워커(run_worker.py)가 떠 있어야 실제로 돈다 —
+        큐에 넣었는데 안 움직이면 그게 첫 번째 확인 대상이다.</div>
+    </div>`;
+  $("panel-body").querySelector(".go").addEventListener("click", async () => {
+    const r = await fetch("/api/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        lat, lng,
+        radius_m: Number($("panel-body").querySelector("#jf-radius").value),
+        max_seconds: Number($("panel-body").querySelector("#jf-secs").value),
+      }),
+    });
+    if (!r.ok) {
+      banner((await r.json()).detail ?? `잡 생성 실패 (${r.status})`);
+      return;
+    }
+    closePanel();
+    pollJobs(true);
+  });
+  $("panel").hidden = false;
+}
+
+const JOB_ICON = { queued: "⏳", claimed: "🔜", running: "🏃",
+                   done: "✅", failed: "✗", canceled: "⛔" };
+let jobTimer = null;
+let jobsPrev = new Map();     // job_id → state (done 전환 감지용)
+
+async function pollJobs(now = false) {
+  clearTimeout(jobTimer);
+  const r = await fetch("/api/jobs?limit=8");
+  const jobs = (await r.json()).jobs;
+  renderJobs(jobs);
+  // 끝난 잡이 생겼으면 그 판정이 지도에 떠야 한다 — 뷰포트 캐시를 버린다
+  for (const j of jobs) {
+    const was = jobsPrev.get(j.job_id);
+    if (was && was !== j.state && (j.state === "done" || j.state === "canceled")) {
+      fetched = null;
+      detailCache.clear();
+      schedule(0);
+    }
+    jobsPrev.set(j.job_id, j.state);
+  }
+  const active = jobs.some((j) => ["queued", "claimed", "running"].includes(j.state));
+  // 도는 잡이 있을 때만 폴링한다 — 유휴 페이지가 서버를 계속 두드릴 이유가 없다
+  if (active || now) jobTimer = setTimeout(pollJobs, 2500);
+}
+
+function renderJobs(jobs) {
+  const list = $("jobs-list");
+  if (!jobs.length) {
+    list.innerHTML = `<div class="muted">아직 없음</div>`;
+    return;
+  }
+  list.innerHTML = jobs.map((j) => {
+    const prog = j.progress_json ? JSON.parse(j.progress_json) : null;
+    const info = j.state === "running" && prog
+      ? `판정 ${prog.verdicts} · ${Math.round(prog.elapsed_s)}s`
+      : j.state === "failed" ? esc((j.error ?? "").split("\n")[0])
+      : j.stop_reason ?? "";
+    const cancelBtn = ["queued", "claimed", "running"].includes(j.state)
+      ? `<button data-cancel="${j.job_id}" title="취소">✕</button>` : "";
+    return `<div class="job">${JOB_ICON[j.state] ?? "?"} #${j.job_id}
+      <span>r${Math.round(j.radius_m)}m</span>
+      <span class="muted">${info}</span>${cancelBtn}</div>`;
+  }).join("");
+  // 워커 없이 큐만 쌓이는 상태를 조용히 두지 않는다
+  const stuck = jobs.some((j) => j.state === "queued" &&
+    Date.now() - Date.parse(j.created_at) > 15000);
+  if (stuck) list.innerHTML +=
+    `<div class="hint">⚠ 큐가 안 빠진다 — 워커를 띄울 것: python app/run_worker.py</div>`;
+  for (const b of list.querySelectorAll("[data-cancel]")) {
+    b.addEventListener("click", async () => {
+      await fetch(`/api/jobs/${b.dataset.cancel}/cancel`, { method: "POST" });
+      pollJobs(true);
+    });
+  }
 }

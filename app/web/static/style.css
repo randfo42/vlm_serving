@@ -56,3 +56,17 @@ canvas.pano-layer { position: absolute; inset: 0; pointer-events: none; z-index:
 .labelbtns button:hover { background: #eee; }
 #labelnote { width: 100%; font: inherit; padding: 4px 6px; border: 1px solid #ccc;
   border-radius: 4px; }
+
+#jobs { position: fixed; left: 10px; bottom: 10px; z-index: 25; width: 300px;
+  background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 8px 10px;
+  box-shadow: 0 2px 8px rgba(0,0,0,.12); font-size: 12px; }
+#jobs .muted { color: #78787a; font-weight: normal; }
+#jobs-head { font-weight: 600; margin-bottom: 4px; }
+#jobs-list .job { display: flex; gap: 6px; align-items: center; padding: 3px 0;
+  border-top: 1px solid #f0f0f0; }
+#jobs-list .job button { border: 0; background: none; cursor: pointer; color: #d03b3b; }
+#jobs .hint { color: #b06000; margin-top: 4px; }
+.jobform label { display: flex; justify-content: space-between; margin: 6px 0; }
+.jobform input { width: 130px; font: inherit; padding: 2px 6px; }
+.jobform .go { margin-top: 8px; font: inherit; padding: 6px 12px; cursor: pointer;
+  border: 1px solid #0ca30c; color: #0ca30c; background: #fff; border-radius: 4px; }
