@@ -19,6 +19,12 @@ app/runs/*.svg
 # 설정에 vlm.url 을 넣는데, 진단 출력이 그걸 찍으면 그대로 남는다.
 app/runs/*.log
 
+# 판정 DB (SQLite). 수집한 pano 좌표와 vlm.url(LAN IP)이 들어간다 — 이 저장소는
+# public 이다. WAL/SHM 부속 파일까지 막는다.
+app/runs/*.db
+app/runs/*.db-wal
+app/runs/*.db-shm
+
 # 지도 API 로 받은 이미지는 커밋하지 않는다. 사업자 약관상 이미지 캐싱이
 # 회색지대다 → app/docs/23-open-questions.md §2
 app/runs/images/
