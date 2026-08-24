@@ -78,8 +78,16 @@ def main() -> int:
               "config_path": str(Path(a.config).resolve() if a.config else settings.DEFAULT_PATH),
               "prompt": P.fingerprint(st.vlm.prompt_version)}
 
+    # 건너뛰기가 켜져 있으면 **런 시작 때** 말한다. 판정이 성근 런이라는 사실이
+    # yaml 주석에만 있으면 실행 시점에는 알 수 없고, 리포트를 정확도로 읽게 된다
+    skip_note = (f"\n⚠  건너뛰기 켜짐 — 노드 {cfg.run_steps}개 찍고 {cfg.skip_steps}개 "
+                 f"건너뛴다 (갈림길은 전부 찍는다).\n"
+                 f"   반경 안 지면을 다 보지 않는다 — 정확도를 재는 런이면 "
+                 f"설정에서 skip.skip_steps 를 0 으로 둘 것."
+                 if cfg.skip_steps else "")
     print(f"provider={prov.name}  prompt={st.vlm.prompt_version}  schema={st.vlm.schema}  "
-          f"start=({lat},{lng})  반경 {cfg.max_distance_m:.0f}m · 최대 {cfg.max_seconds:.0f}s\n"
+          f"start=({lat},{lng})  반경 {cfg.max_distance_m:.0f}m · 최대 {cfg.max_seconds:.0f}s"
+          f"{skip_note}\n"
           f"로그: {out}\n")
     res = None
     # 루프가 모르는 신호(provider 렌더 품질, 클라이언트 캐시/파싱)를 여기서 모은다.
@@ -127,6 +135,9 @@ def main() -> int:
                     tally(log, "parse_failure", count=s.parse_failures)
                 log.finish(stop_reason=res.stop_reason if res else "aborted",
                            nodes=len(res.nodes) if res else 0,
+                           # 판정이 적은 이유가 "건너뛰어서" 인지 "못 받아서" 인지
+                           # 런로그만 보고 알 수 있어야 한다
+                           skipped=res.skipped if res else 0,
                            frontier=len(res.frontier) if res else 0,
                            calls=s.calls, retries=s.retries,
                            cache_misses=s.cache_misses, parse_failures=s.parse_failures,
@@ -145,7 +156,9 @@ def main() -> int:
     s = client.stats
     trails = sum(1 for p in res.probes if p["is_trail"])
     print(f"멈춘 이유: {res.stop_reason}")
-    print(f"노드 {len(res.nodes)} · 판정 {len(res.probes)} (산책로 {trails}) · "
+    print(f"노드 {len(res.nodes)}"
+          + (f" (건너뜀 {res.skipped})" if res.skipped else "")
+          + f" · 판정 {len(res.probes)} (산책로 {trails}) · "
           f"VLM 호출 {s.calls} · {res.wall_s:.0f}s"
           + (f" ({s.total_ms / s.calls / 1000:.2f}s/호출)" if s.calls else ""))
     for w in res.warnings + run_warnings:

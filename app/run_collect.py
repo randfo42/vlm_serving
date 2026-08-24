@@ -45,7 +45,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from trailwalk import geo, providers, settings
-from trailwalk.explore import ExploreConfig, _candidates
+from trailwalk.explore import ExploreConfig, _candidates, cadence
 from trailwalk.imaging import view_to_data_uri
 from trailwalk.providers.base import Pano, ProviderError
 
@@ -56,7 +56,7 @@ def _wire_bytes(raw: bytes, image) -> tuple[bytes, str]:
     return base64.b64decode(uri.split(",", 1)[1]), src_format
 
 
-def walk(provider, cfg, start_pano, bearing: float, max_views: int,
+def walk(provider, cfg, start_pano, bearing: float,
          on_view, deadline: float) -> dict:
     """explore 와 **같은 순서로** 후보를 밟으며 `on_view` 를 부른다.
 
@@ -68,13 +68,25 @@ def walk(provider, cfg, start_pano, bearing: float, max_views: int,
     False 면 그 갈래는 큐에 넣지 않는다 — explore 도 캡처 실패한 갈래는
     확장하지 않는다 (판정이 없으니 갈래를 밟은 것이 아니다).
 
-    돌려주는 dict: stop / views / capture_failed / neighbors_missing.
+    **장수로는 안 멈춘다.** 멈추는 조건은 explore 와 같은 둘뿐이다 —
+    반경(`cfg.max_distance_m`)과 벽시계(`deadline`). 장수 상한을 두면 이
+    스크립트의 존재 이유("explore 가 보냈을 바로 그 N 장")가 깨진다:
+    2026-08-23 GS25 반경 500m 수집이 1000장에서 끊겨 398m 까지밖에 못 갔고,
+    그건 500m 를 모은 것이 아니었다.
+
+    **건너뛰기도 explore 와 같다.** `explore.cadence` 를 그대로 부른다 —
+    여기에 같은 규칙을 다시 적으면 언젠가 한쪽만 고쳐지고, 그러면 이 스크립트가
+    "explore 가 보냈을 바로 그 N 장" 이 아니게 된다. 건너뛴 노드도 이웃은 묻고
+    확장하므로 밟는 그래프는 skip 설정과 무관하다.
+
+    돌려주는 dict: stop / views / capture_failed / neighbors_missing / skipped.
     """
     origin = (start_pano.lat, start_pano.lng)
-    # explore 와 같은 자료구조 — 하나의 FIFO 큐, pano_id 로 visited
-    q = deque([(0, geo.norm_deg(bearing), None, start_pano)])
+    # explore 와 같은 자료구조 — 하나의 FIFO 큐, pano_id 로 visited.
+    # 마지막 항목이 찍고/건너뛰기 주기 안의 위치다 (→ explore.cadence)
+    q = deque([(0, geo.norm_deg(bearing), None, start_pano, 0)])
     visited = {start_pano.pano_id}
-    n = capture_failed = neighbors_missing = 0
+    n = capture_failed = neighbors_missing = skipped = 0
     stop = "exhausted"
 
     done = False
@@ -82,7 +94,7 @@ def walk(provider, cfg, start_pano, bearing: float, max_views: int,
         if time.time() > deadline:
             stop = "time_budget"
             break
-        depth, brg, came_from, pano = q.popleft()
+        depth, brg, came_from, pano, pos = q.popleft()
 
         if geo.haversine_m(origin, (pano.lat, pano.lng)) > cfg.max_distance_m:
             continue        # 반경 밖은 확장하지 않는다 (explore 와 같다)
@@ -93,26 +105,28 @@ def walk(provider, cfg, start_pano, bearing: float, max_views: int,
             neighbors_missing += 1
             continue
 
+        shoot, child_pos = cadence(pos, len(cands) >= 2, cfg)
+        if not shoot:
+            skipped += 1
+
         for hdg, nb in cands:
             # 예산은 노드 경계가 아니라 **후보마다** 본다 — 한 지점이 최대
             # max_candidates 장이라 경계에서만 보면 통째로 넘겨서 찍는다
-            if n >= max_views:
-                stop, done = "max_views", True
-                break
             if time.time() > deadline:
                 stop, done = "time_budget", True
                 break
-            if not on_view(pano, hdg, nb, depth):
-                capture_failed += 1
-                continue
-            n += 1
+            if shoot:
+                if not on_view(pano, hdg, nb, depth):
+                    capture_failed += 1
+                    continue
+                n += 1
             # 첫 접근의 화각이 그 pano 의 것이다 — explore 와 같은 규칙
             visited.add(nb.pano_id)
             q.append((depth + 1, hdg, pano.pano_id,
-                      Pano(pano_id=nb.pano_id, lat=nb.lat, lng=nb.lng)))
+                      Pano(pano_id=nb.pano_id, lat=nb.lat, lng=nb.lng), child_pos))
 
     return {"stop": stop, "views": n, "capture_failed": capture_failed,
-            "neighbors_missing": neighbors_missing}
+            "neighbors_missing": neighbors_missing, "skipped": skipped}
 
 
 # 이 이유로 끊긴 런은 종료 코드 2 다 (→ main 끝). run_explore.py 와 같은 규칙.
@@ -144,7 +158,7 @@ def main() -> int:
         print(f"✗ {e}", file=sys.stderr)
         return 2
 
-    print(f"provider={prov.name}  start=({lat},{lng})  목표 {st.collect.max_views}장 · "
+    print(f"provider={prov.name}  start=({lat},{lng})  "
           f"반경 {cfg.max_distance_m:.0f}m · 최대 {cfg.max_seconds:.0f}s\n"
           f"폴더: {out_dir}\n")
 
@@ -161,6 +175,10 @@ def main() -> int:
                                else settings.DEFAULT_PATH),
             "max_distance_m": cfg.max_distance_m,
             "max_candidates": cfg.max_candidates,
+            # 이 둘이 "몇 장이 나왔어야 하나" 를 정한다. 안 남기면 나중에
+            # 장수가 적은 것을 커버리지 문제로 오독하게 된다
+            "run_steps": cfg.run_steps,
+            "skip_steps": cfg.skip_steps,
             # 이 세 값이 이미지 토큰 수를 정한다. 나중에 재현하려면 필요하다
             "target_size": list(st.image.target_size),
             "jpeg_quality": st.image.jpeg_quality,
@@ -205,24 +223,27 @@ def main() -> int:
             mf.flush()      # 중간에 죽어도 여기까지는 쓸 수 있는 대장이 남는다
             if n % 25 == 0:
                 el = time.time() - t0
-                print(f"  {n:>4}/{st.collect.max_views}장 · {el:.0f}s · "
-                      f"{el / n:.2f}s/장", flush=True)
+                print(f"  {n:>4}장 · {el:.0f}s · {el / n:.2f}s/장", flush=True)
             return True
 
         try:
-            r = walk(prov, cfg, start_pano, st.run.bearing, st.collect.max_views,
+            r = walk(prov, cfg, start_pano, st.run.bearing,
                      on_view, deadline=t0 + cfg.max_seconds)
         except ProviderError as e:
             print(f"✗ provider_error: {e}", file=sys.stderr)
             r = {"stop": "provider_error", "views": n,
-                 "capture_failed": 0, "neighbors_missing": 0}
+                 "capture_failed": 0, "neighbors_missing": 0, "skipped": 0}
     finally:
         mf.close()
         prov.close()
 
     el = time.time() - t0
     print(f"\n멈춘 이유: {r['stop']}")
-    print(f"{n}장 · {el:.0f}s" + (f" ({el / n:.2f}s/장)" if n else ""))
+    print(f"{n}장 · {el:.0f}s" + (f" ({el / n:.2f}s/장)" if n else "")
+          # 장수가 적은 이유가 "건너뛰어서" 인지 "못 갔거나 못 찍어서" 인지
+          # 구분돼야 한다. 앞의 둘은 정상이고 뒤는 사고다
+          + (f" · 건너뛴 지점 {r['skipped']}곳 "
+             f"(skip {cfg.run_steps}찍고{cfg.skip_steps}건너뛰기)" if r["skipped"] else ""))
     if r["capture_failed"]:
         print(f"⚠  캡처 실패 {r['capture_failed']}건")
     if r["neighbors_missing"]:

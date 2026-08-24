@@ -14,6 +14,10 @@ app/runs/*.jsonl
 # 지도 SVG 는 OSM 타일이 base64 로 박혀 장당 1MB 에 가깝다.
 app/runs/*.json
 app/runs/*.svg
+# 런을 하네스에서 떼어 돌릴 때(nohup) 표준출력을 파일로 받는다. 그 파일도
+# 런 산출물이다 — 그리고 **서버 주소가 새기 쉬운 자리다**: 원격으로 돌리려면
+# 설정에 vlm.url 을 넣는데, 진단 출력이 그걸 찍으면 그대로 남는다.
+app/runs/*.log
 
 # 지도 API 로 받은 이미지는 커밋하지 않는다. 사업자 약관상 이미지 캐싱이
 # 회색지대다 → app/docs/23-open-questions.md §2

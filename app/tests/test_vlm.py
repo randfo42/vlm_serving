@@ -30,7 +30,7 @@ def ok_payload(*, prompt_tokens=276, cached=200, content=None, finish="stop"):
     return {
         "choices": [{"finish_reason": finish,
                      "message": {"content": content or json.dumps(
-                         {"camera_surface": "park_path"})}}],
+                         {"nature_level": 3, "footway": 1})}}],
         "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": 17,
                   "prompt_tokens_details": {"cached_tokens": cached}},
     }
@@ -193,7 +193,7 @@ def test_temperature는_0이고_스키마가_강제된다():
     body = fake.bodies[0]
     assert body["temperature"] == 0
     assert body["response_format"]["json_schema"]["strict"] is True
-    assert body["response_format"]["json_schema"]["schema"] == P.SCHEMAS["surface"]
+    assert body["response_format"]["json_schema"]["schema"] == P.SCHEMAS["nature_footway"]
 
 
 def test_스키마_선택이_요청에_반영된다():
@@ -220,7 +220,8 @@ def test_범주가_산책로인지는_설정이_정한다(monkeypatch):
                           ("shared_alley", False), ("roadway", False),
                           ("pedestrian_way", False),   # 정본에서 뺐다
                           ("sidewalk", False)]:
-        c, _ = client(ok_payload(content=json.dumps({"camera_surface": surface})))
+        c, _ = client(ok_payload(content=json.dumps({"camera_surface": surface})),
+                      system_version="system_v4", schema_name="surface")
         v = c.assess(URI)
         assert v.is_trail is want, f"{surface} 가 {v.is_trail}"
         assert v.camera_surface == surface, "원본 범주를 안 남기면 재해석 불가"
@@ -229,11 +230,82 @@ def test_범주가_산책로인지는_설정이_정한다(monkeypatch):
 def test_경계를_옮기면_같은_응답의_판정이_바뀐다():
     """같은 camera_surface 를 다시 판정받지 않고도 A/B 할 수 있어야 한다."""
     body = json.dumps({"camera_surface": "pedestrian_way"})
+    kw = {"system_version": "system_v4", "schema_name": "surface"}
+    strict, _ = client(ok_payload(content=body), **kw)
+    assert strict.assess(URI).is_trail is False
+    loose, _ = client(ok_payload(content=body), **kw)
+    loose.trail_surfaces = loose.trail_surfaces | {"pedestrian_way"}
+    assert loose.assess(URI).is_trail is True
+
+
+# ── v5: is_trail 은 임계값이 만든다 ────────────────────────────────────────
+
+def test_자연등급이_임계_이상이면_산책로다():
+    """정본 임계는 2 다 (가로수만 있는 1 은 산책로가 아니다)."""
+    for level, want in [(0, False), (1, False), (2, True), (3, True)]:
+        c, _ = client(ok_payload(content=json.dumps({"nature_level": level})),
+                      system_version="system_v5", schema_name="nature")
+        v = c.assess(URI)
+        assert v.is_trail is want, f"level {level} 이 {v.is_trail}"
+        assert v.nature_level == level, "원본 등급을 안 남기면 재해석 불가"
+        assert v.camera_surface is None, "v5 는 범주를 내지 않는다"
+
+
+def test_임계를_옮기면_같은_응답의_판정이_바뀐다():
+    """재판정 없이 A/B 할 수 있어야 한다 — trail_surfaces 와 같은 설계다."""
+    body = json.dumps({"nature_level": 1})
+    kw = {"system_version": "system_v5", "schema_name": "nature"}
+    strict, _ = client(ok_payload(content=body), **kw)
+    assert strict.assess(URI).is_trail is False
+    loose, _ = client(ok_payload(content=body), **kw)
+    loose.min_nature_level = 1
+    assert loose.assess(URI).is_trail is True
+
+
+# ── v6: 응답이 둘이고 is_trail 은 그 둘의 AND ─────────────────────────────
+
+def test_녹지와_인도를_따로_기록한다():
+    """한 필드에 두 뜻을 섞지 않는 것이 v6 의 요점이다 — 섞으면 낮은 판정이
+    "자연이 없다" 인지 "걸을 데가 없다" 인지 구별할 수 없다."""
+    c, _ = client(ok_payload(content=json.dumps({"nature_level": 2, "footway": 0})))
+    v = c.assess(URI)
+    assert (v.nature_level, v.footway) == (2, 0)
+    assert v.is_trail is False, "녹지는 넉넉해도 걸을 데가 없으면 아니다"
+    assert v.camera_surface is None
+
+
+@pytest.mark.parametrize(("level", "footway", "want"), [
+    (3, 1, True), (2, 1, True),
+    (3, 0, False),          # 녹지는 3 인데 걸을 데가 없다 (터널·차도)
+    (1, 1, False),          # 걸을 데는 있는데 가로수뿐이다
+    (0, 0, False),
+])
+def test_is_trail_은_녹지임계와_인도의_AND다(level, footway, want):
+    c, _ = client(ok_payload(content=json.dumps(
+        {"nature_level": level, "footway": footway})))
+    assert c.assess(URI).is_trail is want
+
+
+def test_require_footway_를_끄면_v5_동작이_된다():
+    """설정 한 줄로 '녹지만' 과 '녹지 AND 인도' 를 재판정 없이 A/B 한다."""
+    body = json.dumps({"nature_level": 3, "footway": 0})
     strict, _ = client(ok_payload(content=body))
     assert strict.assess(URI).is_trail is False
     loose, _ = client(ok_payload(content=body))
-    loose.trail_surfaces = loose.trail_surfaces | {"pedestrian_way"}
+    loose.require_footway = False
     assert loose.assess(URI).is_trail is True
+
+
+def test_임계가_범위_밖이면_터진다():
+    """밖이면 판정이 전부 True 이거나 전부 False 로 조용히 굳는다."""
+    import dataclasses
+
+    from trailwalk import settings as S
+    for bad_level in (-1, 4):
+        bad = dataclasses.replace(S.SETTINGS, vlm=dataclasses.replace(
+            S.SETTINGS.vlm, min_nature_level=bad_level))
+        with pytest.raises(ValueError, match="min_nature_level"):
+            VlmClient(settings=bad)
 
 
 def test_모르는_범주는_설정_로드에서_터진다():
@@ -252,10 +324,10 @@ def test_모르는_범주는_설정_로드에서_터진다():
 def test_모르는_이름은_이름부터_말해_준다():
     """설정은 문자열 타입만 검사하므로 오타가 여기까지 온다. 생짜 KeyError 가
     나면 무엇이 잘못됐는지도, 뭘 쓸 수 있는지도 안 나온다."""
-    with pytest.raises(P.PromptDriftError, match="system_v4"):
-        VlmClient(system_version="system_v5", schema_name="surface")
-    with pytest.raises(ValueError, match="surface_eval"):
-        VlmClient(schema_name="surfaces")
+    with pytest.raises(P.PromptDriftError, match="system_v6"):
+        VlmClient(system_version="system_v9", schema_name="nature_footway")
+    with pytest.raises(ValueError, match="nature_footway_eval"):
+        VlmClient(schema_name="natures")
 
 
 def test_프롬프트와_스키마의_짝이_안_맞으면_터진다():
@@ -264,6 +336,10 @@ def test_프롬프트와_스키마의_짝이_안_맞으면_터진다():
         VlmClient(system_version="system_v4", schema_name="walk")
     with pytest.raises(ValueError, match="짝이 아니다"):
         VlmClient(system_version="system_v3", schema_name="surface")
+    with pytest.raises(ValueError, match="짝이 아니다"):
+        VlmClient(system_version="system_v5", schema_name="surface")
+    with pytest.raises(ValueError, match="짝이 아니다"):
+        VlmClient(system_version="system_v6", schema_name="nature")
 
 
 # ── 서버 장애 ───────────────────────────────────────────────────────────────

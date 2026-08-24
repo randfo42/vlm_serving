@@ -67,6 +67,14 @@ class CandidateSettings:
 
 
 @dataclass(frozen=True)
+class SkipSettings:
+    # 몇 노드를 찍고 몇 노드를 건너뛸지. **예산 축이 아니다** — 런을 멈추는
+    # 것은 여전히 시간과 거리 둘뿐이고, 이건 노드 하나의 비용을 줄인다.
+    run_steps: int
+    skip_steps: int
+
+
+@dataclass(frozen=True)
 class GeoSettings:
     snap_radius_m: float
 
@@ -83,11 +91,20 @@ class VlmSettings:
     # camera_surface 범주 중 산책로로 셀 것. 범주형 스키마(surface·surface_eval)
     # 에서만 쓰인다 — 불리언 스키마(walk·eval)는 서버가 낸 is_trail 을 그대로 쓴다.
     trail_surfaces: list[str]
+    # nature_level 이 이 값 이상이면 산책로로 센다. 자연 스키마
+    # (nature·nature_eval)에서만 쓰인다. trail_surfaces 와 같은 역할이다 —
+    # 경계를 프롬프트가 아니라 설정에 두어 재판정 없이 옮길 수 있게 한다.
+    min_nature_level: int
+    # footway 가 1 이어야 산책로로 세는가. v6(nature_footway 스키마)에서만
+    # 쓰인다. false 로 두면 녹지 등급만 보는 v5 동작이 된다 — 그 한 줄로
+    # "녹지만" 과 "녹지 AND 인도" 를 재판정 없이 A/B 할 수 있다.
+    require_footway: bool
 
 
 @dataclass(frozen=True)
 class CollectSettings:
-    max_views: int
+    # 장수 상한은 없다. 예산 축은 budget 의 둘(시간·거리)뿐이고, collect 는
+    # explore 와 **같은 조건에서 멈춰야** 같은 것을 모은 것이 된다
     out_dir: str
 
 
@@ -121,6 +138,11 @@ class KakaoSettings:
     render_settle_ms: int
     render_settle_stable: int
     render_settle_tries: int
+    # pano 하나가 쓸 수 있게 되기까지 기다리는 최대 시간과 폴링 간격.
+    # **두 자리를 함께 정한다** — `__show` 의 전환 데드라인과 `neighbors()` 의
+    # 노드 JSON 대기다. 둘 다 "SDK 가 이 pano 를 받아왔는가" 를 기다린다.
+    pano_wait_ms: int
+    pano_poll_ms: int
 
 
 @dataclass(frozen=True)
@@ -156,6 +178,7 @@ class Settings:
     run: RunSettings
     budget: BudgetSettings
     candidates: CandidateSettings
+    skip: SkipSettings
     geo: GeoSettings
     vlm: VlmSettings
     collect: CollectSettings

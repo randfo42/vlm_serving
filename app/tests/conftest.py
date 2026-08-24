@@ -79,6 +79,8 @@ class Verdict:
         self.is_trail = is_trail
         self.confidence = None
         self.camera_surface = None
+        self.nature_level = None
+        self.footway = None
 
 
 class Provider:

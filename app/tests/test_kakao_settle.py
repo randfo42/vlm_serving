@@ -247,6 +247,87 @@ def test_정상_노드_응답은_이웃이_된다():
     assert [(n.pano_id, n.heading) for n in nbrs] == [("2", 91.4)]
 
 
+def test_이미_받아둔_이웃은_한_번도_기다리지_않는다():
+    """대부분의 노드가 이 경로다. 여기에 대기가 붙으면 런 전체에 곱해진다."""
+    page = FakePage(["A"])
+    p = provider(page)
+    p._spots = {}
+    p._sniff_node(FakeResp({"street_view": {"street": {
+        "id": "1", "spot": [{"id": "2", "pan": 91.4, "wgsy": 37.5, "wgsx": 127.0}]}}}))
+    p.neighbors(Pano(pano_id="1", lat=0, lng=0))
+    assert page.waits == [], f"캐시 히트인데 기다렸다: {page.waits}"
+
+
+def test_이웃을_기다리는_자리는_사후_폴링_하나뿐이다():
+    """⚠️ 사전 폴링(`range(6)`, 최대 600ms)을 되살리면 여기서 터진다.
+
+    BFS 로 새로 발견한 pano 는 **띄운 적이 없어서** 노드 응답이 지나간 적이
+    없다 — SDK 는 자기가 표시한 pano 의 JSON 만 받아온다. 그래서 그 사전
+    폴링은 성공할 수 없는 대기였고, 노드마다 611ms 를 통째로 소진했다
+    (2026-08-23 약수역사거리 실측: 노드 11개가 전부 끝까지 돌았다).
+
+    사후 폴링이 같은 경우를 이미 덮으므로 지워도 잃는 것이 없다.
+    """
+    calls = []
+    page = FakePage(["A"])
+    page.evaluate = lambda js, *a, **k: calls.append(js)
+    p = provider(page)
+    p._spots = {}                       # 응답이 영영 안 온다 — 폴링이 소진된다
+    assert p.neighbors(Pano(pano_id="1", lat=0, lng=0)) == []
+    tries = kakao.PANO_WAIT_MS // kakao.PANO_POLL_MS
+    assert len(page.waits) == tries, f"사전 폴링이 돌아왔다 ({len(page.waits)}회 대기)"
+    assert set(page.waits) == {kakao.PANO_POLL_MS}
+
+
+def test_노드_JSON_대기창이_show_가_얹어주던_만큼은_된다():
+    """⚠️ `__goto` 는 즉시 반환하므로 `__show` 가 얹어 주던 대기(전환 완료까지,
+    JS deadline 12초)가 사라졌다. 전환하려면 노드 JSON 이 와 있어야 하므로
+    그 시간이 곧 대기창이었다.
+
+    짧게 줄이면 느린 회선에서 **있는 갈래를 없다고 한다.** neighbors_missing
+    으로 집계는 되지만, 같은 그래프가 머신·회선 상태에 따라 다르게 나오면
+    재현성이 깨진다 — 이 레포가 프레임 안정화에 들인 노력과 같은 종류의
+    문제다. 빠를 때는 비용이 0 이라(오는 즉시 빠져나온다) 줄일 이유가 없다.
+    """
+    assert kakao.PANO_WAIT_MS >= 12_000, \
+        "__show 가 얹어 주던 12초보다 짧으면 대기창이 줄어든 것이다"
+    # JS 쪽 deadline 도 같은 상수에서 온다 — 정본이 둘이면 언젠가 갈라진다
+    assert f"Date.now() + {kakao.PANO_WAIT_MS}" in kakao.build_page("KEY")
+    assert "{{PANO_WAIT_MS}}" not in kakao.build_page("KEY"), "치환이 안 됐다"
+
+
+@pytest.mark.parametrize("wait,poll", [(12_000, 0), (12_000, -1), (50, 100)])
+def test_대기창이_말이_안_되면_provider_를_안_만든다(wait, poll):
+    """설정으로 뺀 값이라 이제 사람이 0 을 줄 수 있다. 0 이면 폴링 횟수
+    계산이 ZeroDivisionError 로 죽고, 음수면 대기가 통째로 사라져 **있는
+    갈래를 없다고 하면서 에러는 안 난다** — 뒤쪽이 더 나쁘다."""
+    from dataclasses import replace
+
+    from trailwalk import settings
+    s = settings.load()
+    bad = replace(s, kakao=replace(s.kakao, pano_wait_ms=wait, pano_poll_ms=poll))
+    with pytest.raises(kakao.ProviderError, match="pano_poll_ms"):
+        kakao.KakaoProvider(appkey="k", settings=bad)
+
+
+def test_이웃은_좌표를_기다리는_show_를_쓰지_않는다():
+    """`__show` 의 400ms 는 getPosition 을 유효하게 만들려는 대기인데,
+    neighbors 는 그 반환값을 쓰지 않는다 — 노드 JSON 만 오면 된다."""
+    calls = []
+    page = FakePage(["A"])
+    page.evaluate = lambda js, *a, **k: calls.append(js)
+    p = provider(page)
+    p._spots = {}
+    p.neighbors(Pano(pano_id="1", lat=0, lng=0))
+    assert calls, "pano 를 띄우지도 않았다"
+    assert all("__goto" in js and "__show" not in js for js in calls), calls
+
+
+def test_페이지가_goto_를_정의한다():
+    """위 두 테스트는 가짜 page 라 JS 존재를 확인하지 못한다."""
+    assert "window.__goto" in kakao.build_page("KEY")
+
+
 def test_노드_아닌_응답은_무시한다():
     p = provider(FakePage(["A"]))
     p._spots = {}

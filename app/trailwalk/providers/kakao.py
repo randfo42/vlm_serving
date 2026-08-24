@@ -55,6 +55,20 @@ VIEW_W, VIEW_H = SETTINGS.image.target_size
 # 우리는 **추가 요청을 보내지 않고 응답만 가로챈다** (→ neighbors()).
 NODE_API_MARK = "roadview-search/v2/node/"
 
+# pano 하나가 쓸 수 있게 되기를 기다리는 최대 시간과 폴링 간격.
+# 값의 정본은 app/config/trailwalk.yaml 의 kakao 구획이다 (근거도 그쪽).
+#
+# ⚠️ **이름이 neighbors 전용처럼 보이면 안 된다 — 두 자리를 함께 정한다:**
+#
+#   · `__show` 의 전환 데드라인 (JS). capture()/nearest() 가 매번 탄다
+#   · `neighbors()` 의 노드 JSON 대기
+#
+# 둘 다 "SDK 가 이 pano 를 받아왔는가" 를 기다리는 것이라 한 값으로 묶었다.
+# 나중에 "neighbors 가 너무 오래 기다린다" 고 이 값을 낮추면 캡처 쪽 전환
+# 대기도 같이 줄어든다는 뜻이다.
+PANO_WAIT_MS = SETTINGS.kakao.pano_wait_ms
+PANO_POLL_MS = SETTINGS.kakao.pano_poll_ms
+
 # 프레임 안정화 (→ capture()). 조건이 둘이다: 타일 요청이 끊기고, 그다음
 # 연속 N 프레임이 동일할 것. 하나만으로는 반쯤 로드된 그림이 통과한다.
 # 값의 정본은 app/config/trailwalk.yaml 의 kakao 구획이다 (근거도 그쪽).
@@ -173,7 +187,7 @@ function curPano() {
 window.__show = function (panoId, pan) {
   return new Promise(function (resolve, reject) {
     var target = String(panoId);
-    var deadline = Date.now() + 12000;
+    var deadline = Date.now() + {{PANO_WAIT_MS}};
     if (curPano() !== target) { rv.setPanoId(Number(panoId), null); }
     (function poll() {
       if (curPano() === target) {
@@ -203,6 +217,20 @@ window.__show = function (panoId, pan) {
     })();
   });
 };
+
+// panoId 만 세팅하고 **아무것도 기다리지 않는다.** neighbors() 전용이다.
+//
+// __show 는 좌표를 돌려주려고 2×rAF + setTimeout(400) 을 기다리는데,
+// neighbors() 는 그 반환값을 쓰지 않는다 — 필요한 것은 SDK 가 이 pano 의 노드
+// JSON 을 받아오게 만드는 것뿐이고, 이웃 목록은 그 응답을 가로채서 얻는다
+// (_sniff_node). 좌표도 프레임도 안 본다.
+//
+// 돌아온 뒤 로드뷰는 전환 중일 수 있다. 그래도 되는 이유는 다음에 오는 것이
+// 항상 capture 이고, capture 의 __show 가 curPano() 가 목표가 될 때까지
+// 폴링하기 때문이다 — 즉 전환 대기가 사라지는 게 아니라 캡처 쪽으로 넘어간다.
+window.__goto = function (panoId) {
+  if (curPano() !== String(panoId)) { rv.setPanoId(Number(panoId), null); }
+};
 </script></body></html>
 """
 
@@ -211,7 +239,8 @@ _ARROW_CSS = '#rv [id^="_al_"], #rv [id^="_atl_"] { display: none !important; }'
 
 
 def build_page(appkey: str, *, hide_arrows: bool = False,
-               view_w: int = VIEW_W, view_h: int = VIEW_H) -> str:
+               view_w: int = VIEW_W, view_h: int = VIEW_H,
+               pano_wait_ms: int = PANO_WAIT_MS) -> str:
     """페이지 HTML 조립.
 
     `%` 포매팅을 쓰지 않는다 — 본문이 CSS 와 JS 라 `%` 가 흔하고, 한 번
@@ -221,6 +250,7 @@ def build_page(appkey: str, *, hide_arrows: bool = False,
             .replace("{{W}}", str(view_w))
             .replace("{{H}}", str(view_h))
             .replace("{{ARROW_CSS}}", _ARROW_CSS if hide_arrows else "")
+            .replace("{{PANO_WAIT_MS}}", str(pano_wait_ms))
             .replace("{{APPKEY}}", appkey))
 
 
@@ -255,6 +285,8 @@ class KakaoProvider:
     render_settle_ms = RENDER_SETTLE_MS
     render_settle_stable = RENDER_SETTLE_STABLE
     render_settle_tries = RENDER_SETTLE_TRIES
+    pano_wait_ms = PANO_WAIT_MS
+    pano_poll_ms = PANO_POLL_MS
 
     def __init__(self, appkey: str, *, host: str | None = None, port: int | None = None,
                  headless: bool | None = None, hide_arrows: bool | None = None,
@@ -270,6 +302,16 @@ class KakaoProvider:
         hide_arrows = hide_arrows if hide_arrows is not None else k.hide_arrows
         view_w = view_w if view_w is not None else st.image.target_size[0]
         view_h = view_h if view_h is not None else st.image.target_size[1]
+        # 타입은 settings 가 보지만 의미는 여기서 본다. 0 이면 폴링 횟수 계산이
+        # ZeroDivisionError 로 죽고(neighbors), 음수면 대기가 통째로 사라져
+        # **있는 갈래를 없다고 하면서 에러는 안 난다** — 그쪽이 더 나쁘다.
+        # 하드코딩이던 시절에는 이 값을 줄 방법 자체가 없었다.
+        if k.pano_poll_ms < 1 or k.pano_wait_ms < k.pano_poll_ms:
+            raise ProviderError(
+                f"kakao.pano_poll_ms 는 1 이상이어야 하고 pano_wait_ms 는 그 "
+                f"이상이어야 한다 (지금 wait={k.pano_wait_ms}, poll={k.pano_poll_ms}).\n"
+                f"  이 둘은 pano 전환과 이웃 목록을 기다리는 창이다 — 0 이면 "
+                f"기다리지 않고, 그러면 있는 갈래를 없다고 한다.")
         if not appkey:
             raise ProviderError(
                 "Kakao JS 앱키가 없다. 개발자 콘솔에서 발급하고 플랫폼 > Web 에 "
@@ -288,13 +330,16 @@ class KakaoProvider:
         self.render_settle_ms = k.render_settle_ms
         self.render_settle_stable = k.render_settle_stable
         self.render_settle_tries = k.render_settle_tries
+        self.pano_wait_ms = k.pano_wait_ms
+        self.pano_poll_ms = k.pano_poll_ms
 
         # 뷰포트는 페이지 CSS 와 브라우저 viewport 양쪽에 박힌다. 둘이 어긋나면
         # 스크롤바가 생기거나 캔버스가 잘려서 화각이 조용히 달라진다.
         self.view_w, self.view_h = view_w, view_h
         handler = type("H", (_Handler,), {
             "page": build_page(appkey, hide_arrows=hide_arrows,
-                               view_w=view_w, view_h=view_h).encode()})
+                               view_w=view_w, view_h=view_h,
+                               pano_wait_ms=k.pano_wait_ms).encode()})
         self._httpd = HTTPServer((host, port), handler)
         threading.Thread(target=self._httpd.serve_forever, daemon=True).start()
 
@@ -406,21 +451,47 @@ class KakaoProvider:
         (실측: 청계천 22노드 중 12개). 그래서 없으면 **직접 띄워서** 받아오게
         한다. 어차피 곧 capture 로 띄울 pano 라 렌더가 앞당겨질 뿐, Kakao 로
         나가는 요청이 늘지는 않는다.
+
+        ### 기다리는 자리는 아래 폴링 하나뿐이다 (2026-08-23)
+
+        한때 여기 **앞에** 사전 폴링이 하나 더 있었다 (`range(6)`, 최대 600ms).
+        "이미 지나간 응답이면 금방 온다" 는 이유였는데, BFS 로 새로 발견한
+        pano 는 **띄운 적이 없어서 응답이 지나간 적이 없다** — SDK 는 자기가
+        표시한 pano 의 노드 JSON 만 받아온다. 그래서 그 600ms 는 성공할 수
+        없는 대기였고, 실측에서 노드 11개가 전부 끝까지 소진했다.
+
+        지운 것이 안전한 이유는 아래 폴링이 같은 경우를 이미 덮기 때문이다.
+        응답이 진짜로 날아오는 중이면 `__goto` 가 무해한 no-op 이 되고
+        (curPano 가 이미 목표다) 아래에서 받는다.
+
+        `__show` 대신 `__goto` 를 쓰는 것도 같은 이유다 — `__show` 의 400ms 는
+        좌표를 유효하게 만들려는 대기인데 여기서는 그 반환값을 쓰지 않는다.
+
+        ⚠️ 그 대신 `__show` 가 얹어 주던 대기창이 사라진다. `__show` 는 전환
+        완료까지 블록했고 전환하려면 노드 JSON 이 이미 와 있어야 하므로,
+        아래 폴링이 실질적으로 "렌더 시간 + 폴링" 이었다. 짧아지면 느린
+        회선에서 있는 갈래를 없다고 하게 되므로 `kakao.pano_wait_ms` 로
+        명시해 되돌렸다 (빠를 때는 비용 0 — 오는 즉시 빠져나온다).
+
+        약수역사거리 노드 15개 실측 (2026-08-23, 이 두 변경으로):
+        이 함수 1,034ms → 102ms · 노드 하나 전체 3,033ms → 2,066ms (−32%).
+
+        ⚠️ capture 쪽 시간은 1,200ms → 1,179ms 로 **안 늘었다.** `__goto` 가
+        전환을 미리 걸어 두고 그 사이에 노드 JSON 폴링과 타일 로딩이 겹치기
+        때문이다. 대기가 캡처로 옮겨갈 것이라는 예상이 틀렸다 — 그래서 잰다.
         """
-        for _ in range(6):              # 이미 지나간 응답이면 금방 온다
-            self._raise_if_sniff_broken()
-            if pano.pano_id in self._spots:
-                return self._spots[pano.pano_id]
-            self._page.wait_for_timeout(100)
+        self._raise_if_sniff_broken()
+        if pano.pano_id in self._spots:
+            return self._spots[pano.pano_id]
         try:
-            self._page.evaluate("([p]) => window.__show(p, 0)", [pano.pano_id])
+            self._page.evaluate("([p]) => window.__goto(p)", [pano.pano_id])
         except Exception as e:
             raise ProviderError(f"로드뷰 렌더 실패 (pano={pano.pano_id}): {e}") from e
-        for _ in range(25):             # 최대 2.5초
+        for _ in range(self.pano_wait_ms // self.pano_poll_ms):
             self._raise_if_sniff_broken()
             if pano.pano_id in self._spots:
                 return self._spots[pano.pano_id]
-            self._page.wait_for_timeout(100)
+            self._page.wait_for_timeout(self.pano_poll_ms)
         return []
 
     def nearest(self, lat: float, lng: float, radius_m: float) -> Pano | None:
