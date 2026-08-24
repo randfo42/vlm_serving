@@ -15,6 +15,8 @@ app/
   run_explore.py         # CLI 진입점 — 시작점에서 뻗는 산책로를 전부 마킹 (BFS)
   run_eval.py            # CLI 진입점 — 라벨 세트로 정확도를 잰다
   run_collect.py         # CLI 진입점 — explore 와 같은 순서로 캡처만 모은다 (VLM 없이)
+  run_web.py             # CLI 진입점 — 로컬 웹 UI (조회·라벨링. 탐색 실행은 워커)
+  backfill_runs.py       # 유지보수 — 옛 런로그 JSONL → SQLite (--dry-run/--force)
   check_kakao.py         # 진단 — 로드뷰가 잡히고 실제로 그려지는지 (VLM 불필요)
   check_fov.py           # 진단 — 화각·화살표 측정 (VLM 불필요)
   check_pano_census.py   # 진단 — 반경 안 pano 를 계열별로 전수 조사 (캡처 불필요)
@@ -30,12 +32,18 @@ app/
     imaging.py           # ★ 서버로 나가는 모든 바이트가 지나는 단일 출구
     vlm.py               # 1턴 호출 + 조용한 실패 감지 + 서킷브레이커
     geo.py               # 거리·각도. 이동을 만들지 않는다
-    runlog.py            # JSONL
+    store.py             # SQLite 정본 — 스키마 · RunWriter · 질의. 판정은 불변
+    runner.py            # 공개 경계층 — 웹·워커·CLI 가 explore 를 부르는 유일한 배선
+    runlog.py            # JSONL (eval 전용으로 남음 — explore 는 store 를 쓴다)
     config.py            # .env → os.environ. 값을 절대 출력하지 않는다
     providers/
       base.py            # Pano · Neighbor · RoadviewProvider 프로토콜
       fixture.py         # 오프라인. API 키 없이 전체 배선 확인
       kakao.py           # Playwright + JS SDK. 이웃 그래프 + 프레임 안정화
+
+  web/                   # 웹 계층 — FastAPI 라우트 + 정적 프론트
+    api.py               # 조회·라벨 라우트. ⚠ runner/providers 를 임포트하지 않는다
+    static/              # 지도 페이지 (빌드 스텝 없음 · 순수 ES 모듈)
 
   labels/                # 라벨 데이터 수집 파이프라인 (→ docs/22-labels.md)
     fetch_gil_seoul.py     # gil.seoul.go.kr → trails.json (150개 산책로)

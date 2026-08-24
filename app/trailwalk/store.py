@@ -481,3 +481,139 @@ class RunWriter:
         # finish 없이 나가면(예외) run 은 finished_at IS NULL 로 남는다 — 그게
         # "중간에 죽은 런" 의 정직한 표현이다. 여기서 몰래 닫지 않는다.
         return False
+
+
+# ── 질의 — 웹과 CLI 가 같은 것을 쓴다. 전부 dict 를 돌려준다 ─────────────────
+
+def run_ids_for(conn: sqlite3.Connection, *, prompt_version: str | None = None,
+                run_id: int | None = None) -> list[int]:
+    """뷰포트 조회가 집계할 run 집합.
+
+    기본 필터가 "프롬프트 버전 하나" 인 이유: MAX 집계는 한 pano 안의
+    **방위들** 사이 규칙이다. 백필로 한 점에 v1~v6 이 섞였는데 버전을
+    가로질러 MAX 를 걸면 폐기된 버전의 오탐 하나가 그 점을 영원히
+    초록으로 만든다 — v3 의 골목 오탐이 정확히 그 모양이다.
+    """
+    if run_id is not None:
+        return [run_id]
+    if prompt_version:
+        return [r[0] for r in conn.execute(
+            "SELECT run_id FROM run WHERE prompt_version = ?", (prompt_version,))]
+    return [r[0] for r in conn.execute("SELECT run_id FROM run")]
+
+
+def viewport(conn: sqlite3.Connection, *, s: float, w: float, n: float, e: float,
+             run_ids: list[int], limit: int,
+             with_headings: bool = False) -> tuple[list[dict], bool]:
+    """bbox 안의 pano 를 판정 MAX 집계와 함께. (rows, truncated).
+
+    GROUP BY 를 안 쓰는 이유: bbox 인덱스는 lat 순으로 행을 주는데 그룹
+    키가 pano_id 라 SQLite 가 임시 B-tree 정렬을 붙인다. 상관 서브쿼리는
+    그 정렬이 없고, verdict_agg 커버링 인덱스만 탄다 (테스트가 실행계획을
+    고정한다). LIMIT+1 로 잘림을 **감지**해 truncated 로 알린다 — 조용히
+    일부만 그리면 "안 본 것" 과 "없는 것" 이 섞인다.
+    """
+    ids = json.dumps(run_ids)
+    q = """
+    SELECT p.pano_id, p.lat, p.lng,
+      (SELECT MAX(v.nature_level) FROM verdict v WHERE v.pano_id = p.pano_id
+         AND v.run_id IN (SELECT value FROM json_each(:ids))) AS nature_level,
+      (SELECT MAX(v.is_trail) FROM verdict v WHERE v.pano_id = p.pano_id
+         AND v.run_id IN (SELECT value FROM json_each(:ids))) AS is_trail,
+      (SELECT COUNT(*) FROM verdict v WHERE v.pano_id = p.pano_id
+         AND v.run_id IN (SELECT value FROM json_each(:ids))) AS n,
+      (SELECT l.is_trail FROM label l WHERE l.pano_id = p.pano_id
+         AND l.heading IS NULL) AS label
+    FROM pano p
+    WHERE p.lat BETWEEN :s AND :n AND p.lng BETWEEN :w AND :e
+      -- 선택된 런에 판정이 있는 pano 만. 이 필터는 **LIMIT 앞**(SQL 안)이어야
+      -- 한다 — 뒤에서 파이썬으로 거르면 LIMIT 예산이 다른 버전의 행에
+      -- 소진돼, 진짜 매칭 pano 가 빠졌는데 truncated 는 False 가 된다
+      AND EXISTS (SELECT 1 FROM verdict v WHERE v.pano_id = p.pano_id
+                    AND v.run_id IN (SELECT value FROM json_each(:ids)))
+    LIMIT :lim
+    """
+    rows = [dict(r) for r in conn.execute(
+        q, {"ids": ids, "s": s, "n": n, "w": w, "e": e, "lim": limit + 1})]
+    truncated = len(rows) > limit
+    rows = rows[:limit]
+    if with_headings and rows:
+        marks = ",".join("?" for _ in rows)
+        hs: dict[str, list] = {}
+        for v in conn.execute(
+                f"SELECT pano_id, heading, is_trail, nature_level FROM verdict "
+                f"WHERE pano_id IN ({marks}) AND run_id IN "
+                f"(SELECT value FROM json_each(?)) ORDER BY heading",
+                [r["pano_id"] for r in rows] + [ids]):
+            hs.setdefault(v["pano_id"], []).append(
+                {"heading": v["heading"], "is_trail": v["is_trail"],
+                 "nature_level": v["nature_level"]})
+        for r in rows:
+            r["headings"] = hs.get(r["pano_id"], [])
+    return rows, truncated
+
+
+def pano_detail(conn: sqlite3.Connection, pano_id: str) -> dict | None:
+    """그 pano 의 판정 이력 전부 — 버전 필터 없이. 호버/클릭 패널이 쓴다.
+    같은 지점을 v4/v5/v6 가 다르게 봤다면 그 자리에서 보여야 한다."""
+    p = conn.execute("SELECT * FROM pano WHERE pano_id = ?", (pano_id,)).fetchone()
+    if p is None:
+        return None
+    verdicts = [dict(v) for v in conn.execute(
+        "SELECT v.verdict_id, v.run_id, r.name AS run_name, r.prompt_version,"
+        " v.heading, v.step, v.is_trail, v.confidence, v.camera_surface,"
+        " v.nature_level, v.footway, v.latency_ms, v.created_at,"
+        " v.image_path IS NOT NULL AS has_image"
+        " FROM verdict v JOIN run r USING(run_id)"
+        " WHERE v.pano_id = ? ORDER BY v.verdict_id", (pano_id,))]
+    labels = [dict(r) for r in conn.execute(
+        "SELECT * FROM label WHERE pano_id = ?", (pano_id,))]
+    return {"pano": dict(p), "verdicts": verdicts, "labels": labels}
+
+
+def runs_list(conn: sqlite3.Connection, limit: int = 100) -> list[dict]:
+    return [dict(r) for r in conn.execute(
+        "SELECT run_id, name, kind, provider, source, started_at, finished_at,"
+        " stop_reason, wall_s, prompt_version, schema_name,"
+        " (SELECT COUNT(*) FROM verdict v WHERE v.run_id = run.run_id) AS verdicts,"
+        " (SELECT COUNT(*) FROM warning w WHERE w.run_id = run.run_id) AS warnings"
+        " FROM run ORDER BY started_at DESC LIMIT ?", (limit,))]
+
+
+def run_detail(conn: sqlite3.Connection, run_id: int) -> dict | None:
+    r = conn.execute(
+        "SELECT run_id, name, kind, provider, source, started_at, finished_at,"
+        " stop_reason, wall_s, start_lat, start_lng, origin_pano, prompt_version,"
+        " prompt_sha256, schema_name, min_nature_level, require_footway,"
+        " trail_surfaces_json, summary_json"
+        " FROM run WHERE run_id = ?", (run_id,)).fetchone()
+    # vlm_url(LAN IP)과 header_json(그 안에 url)은 일부러 안 낸다 — 이 응답은
+    # 브라우저로 나가고, 페이지를 캡처해 공유하는 순간 주소가 새는 자리다
+    if r is None:
+        return None
+    d = dict(r)
+    d["warnings"] = [dict(w) for w in conn.execute(
+        "SELECT kind, code, count, message FROM warning WHERE run_id = ?"
+        " ORDER BY warning_id", (run_id,))]
+    return d
+
+
+def image_path_of(conn: sqlite3.Connection, verdict_id: int) -> str | None:
+    r = conn.execute("SELECT image_path FROM verdict WHERE verdict_id = ?",
+                     (verdict_id,)).fetchone()
+    return r["image_path"] if r else None
+
+
+def prompt_versions(conn: sqlite3.Connection) -> list[dict]:
+    """버전 드롭다운의 재료 — 버전마다 판정이 몇 건인지."""
+    return [dict(r) for r in conn.execute(
+        "SELECT r.prompt_version, COUNT(*) AS verdicts,"
+        " COUNT(DISTINCT r.run_id) AS runs"
+        " FROM verdict v JOIN run r USING(run_id)"
+        " GROUP BY r.prompt_version ORDER BY r.prompt_version")]
+
+
+def counts(conn: sqlite3.Connection) -> dict:
+    """/api/health 용. pano 수는 R*Tree 로 갈아탈 때를 아는 계기판이기도 하다."""
+    return {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+            for t in ("pano", "verdict", "run", "label", "job")}
