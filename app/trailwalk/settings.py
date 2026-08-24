@@ -174,6 +174,14 @@ class FixtureSettings:
 
 
 @dataclass(frozen=True)
+class WebSettings:
+    # 웹 UI(조회·라벨링)와 잡 큐가 공유하는 것들. 값과 근거는 trailwalk.yaml 에
+    host: str
+    port: int
+    db: str
+
+
+@dataclass(frozen=True)
 class Settings:
     run: RunSettings
     budget: BudgetSettings
@@ -188,6 +196,7 @@ class Settings:
     sampling: SamplingSettings
     labels: LabelsSettings
     eval: EvalSettings
+    web: WebSettings
 
 
 def _coerce(v: Any, hint: Any, where: str, name: str):

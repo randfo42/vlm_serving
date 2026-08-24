@@ -81,6 +81,12 @@ class Verdict:
         self.camera_surface = None
         self.nature_level = None
         self.footway = None
+        # 기록 계층(store.RunWriter)이 읽는 필드까지 갖춰야 runner 테스트가
+        # 이 픽스처를 그대로 쓸 수 있다 — 진짜 Verdict(vlm.py)와 같은 모양
+        self.prompt_tokens = 100
+        self.cached_tokens = 90
+        self.completion_tokens = 10
+        self.latency_ms = 1.0
 
 
 class Provider:

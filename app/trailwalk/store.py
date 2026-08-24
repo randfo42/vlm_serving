@@ -1,0 +1,483 @@
+"""저장소 — SQLite 한 파일이 판정의 유일한 정본이다.
+
+런로그 JSONL(runlog.py)을 대체한다. 파일을 나누던 시절의 문제는 "어느 지점을
+어떤 프롬프트로 어떻게 판정했나"가 런 파일 24개에 흩어져, 지도 한 장을 그리려면
+파일을 손으로 골라 조인해야 했다는 것이다. 웹이 뷰포트 단위로 조회하려면
+정본이 한곳이어야 한다.
+
+원칙 셋:
+
+  1. **판정은 불변이다.** verdict 에는 UPDATE 가 없다 — 같은 지점을 새 프롬프트로
+     다시 판정하면 새 행이다. v5↔v6 비교(둘 다 남아 있어서 가능했다)가 근거다.
+     UPDATE 되는 것은 사람이 붙인 label 뿐이고, 그래서 label 에만 updated_at 이 있다.
+  2. **지도 위 한 점 = pano 한 행.** 좌표는 선착순 고정 — 같은 pano 가 두 좌표를
+     갖는 상태를 스키마가 표현하지 못하게 한다.
+  3. **판정 1건 = 커밋 1번.** 런로그가 줄마다 flush 하던 계약(runlog.py)과 같다 —
+     6시간 런이 중간에 죽어도 거기까지는 남는다. 판정 간격이 1초를 넘어
+     커밋 비용은 측정 밖이다.
+
+⚠️ 이 파일(DB)은 커밋하지 않는다 — 수집한 pano 좌표와 vlm.url(LAN IP)이
+들어가고 이 저장소는 public 이다. `.gitignore` 의 `app/runs/*.db*` 가 막는다.
+"""
+from __future__ import annotations
+
+import json
+import sqlite3
+import time
+from datetime import UTC, datetime
+from pathlib import Path
+
+from . import warn as warn_mod
+
+SCHEMA_VERSION = 1
+
+# 스키마 정본은 이 문자열 하나다. 마이그레이션 파일을 따로 두지 않는다 —
+# 정본이 둘이 되는 순간 어느 쪽이 실제 DB 와 같은지 코드를 읽어야 알게 된다
+# (prompts/system_v*.txt 를 바이트 고정하는 것과 같은 이유).
+SCHEMA_SQL = """
+CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+
+-- 지도 위의 한 점. 좌표는 선착순 고정(upsert_pano 의 DO NOTHING) — SDK 가 주는
+-- pano 좌표는 안 바뀌고, 바뀐다면 그건 기록할 사건이지 덮어쓸 값이 아니다.
+CREATE TABLE pano (
+  pano_id     TEXT PRIMARY KEY,
+  lat         REAL NOT NULL,
+  lng         REAL NOT NULL,
+  captured_at TEXT,
+  first_seen  TEXT NOT NULL
+);
+CREATE INDEX pano_bbox ON pano(lat, lng);
+
+CREATE TABLE run (
+  run_id        INTEGER PRIMARY KEY,
+  name          TEXT NOT NULL UNIQUE,  -- 옛 런로그 파일 stem 또는 새 런 타임스탬프
+  kind          TEXT NOT NULL,         -- explore | walk | eval
+  provider      TEXT NOT NULL,
+  source        TEXT NOT NULL,         -- live | backfill
+  source_sha256 TEXT,                  -- 백필 원본 JSONL 의 해시. 재실행 멱등성의 근거
+  started_at    TEXT NOT NULL,
+  finished_at   TEXT,                  -- NULL = 진행 중이거나 중간에 죽었다
+  stop_reason   TEXT,
+  wall_s        REAL,
+  start_lat     REAL, start_lng REAL, start_bearing REAL,
+  origin_pano   TEXT REFERENCES pano(pano_id),   -- 스냅된 시작점 (docs/23 §9)
+  prompt_version TEXT, prompt_sha256 TEXT, schema_name TEXT,
+  -- is_trail 을 유도한 경계. 원본이 없으면 임계를 옮겼을 때 옛 런을 다시 해석할
+  -- 수 없다 (verdict 의 nature_level 을 남기는 것과 같은 근거). 백필분은 NULL —
+  -- 옛 헤더에 없다.
+  min_nature_level INTEGER, require_footway INTEGER, trail_surfaces_json TEXT,
+  header_json   TEXT NOT NULL,         -- run_start 원문. 세대마다 키가 달라 열로 안 푼다
+  summary_json  TEXT,                  -- run_end 의 나머지 (calls/retries/…)
+  vlm_url       TEXT                   -- ⚠ LAN IP 가 들어온다. 내보내기에서 제외할 것
+);
+CREATE INDEX run_prompt ON run(prompt_version);
+
+-- 판정. 불변 — 재판정은 새 행. 런 안 판정 순서는 verdict_id 오름차순이 정본이다
+-- (런로그 파일명의 "이름순 = 호출순" 을 승계).
+CREATE TABLE verdict (
+  verdict_id  INTEGER PRIMARY KEY,
+  run_id      INTEGER NOT NULL REFERENCES run(run_id) ON DELETE CASCADE,
+  pano_id     TEXT NOT NULL REFERENCES pano(pano_id),
+  heading     REAL NOT NULL,
+  step        INTEGER,
+  is_trail    INTEGER NOT NULL,        -- **파생값** (run 의 경계 컬럼들로 유도)
+  confidence  INTEGER,
+  camera_surface TEXT,                 -- v4 에서만
+  nature_level   INTEGER,              -- v5+ 에서만
+  footway        INTEGER,              -- v6 에서만
+  prompt_tokens INTEGER, cached_tokens INTEGER, completion_tokens INTEGER,
+  latency_ms  REAL,
+  src_format  TEXT,
+  image_path  TEXT,                    -- app/runs/images/ 기준 상대경로. NULL = 안 저장
+  sample_id   TEXT, label INTEGER,     -- eval 런에서만
+  -- probe 시각. 옛 런로그의 probe 줄에는 시각이 없어 백필분은 run.started_at 로
+  -- 채운다 — 근사라는 사실은 run.source='backfill' 이 이미 말해 준다.
+  created_at  TEXT NOT NULL
+);
+CREATE INDEX verdict_agg ON verdict(pano_id, run_id, nature_level, is_trail);
+CREATE INDEX verdict_run ON verdict(run_id, verdict_id);
+CREATE INDEX verdict_sample ON verdict(run_id, sample_id) WHERE sample_id IS NOT NULL;
+
+-- 탐색 그래프. "안 본 것" 과 "없는 것" 을 구분하는 근거를 버리지 않는다.
+CREATE TABLE node (
+  run_id      INTEGER NOT NULL REFERENCES run(run_id) ON DELETE CASCADE,
+  pano_id     TEXT NOT NULL REFERENCES pano(pano_id),
+  depth       INTEGER NOT NULL,
+  parent_pano TEXT,
+  is_trail    INTEGER,                 -- NULL = 안 물어봤다 (건너뜀)
+  skipped     INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (run_id, pano_id)
+) WITHOUT ROWID;
+
+CREATE TABLE frontier (
+  frontier_id INTEGER PRIMARY KEY,
+  run_id    INTEGER NOT NULL REFERENCES run(run_id) ON DELETE CASCADE,
+  from_pano TEXT,
+  pano_id   TEXT NOT NULL,   -- pano FK 를 안 건다 — 안 가 본 지점이라 pano 행이 없다
+  lat       REAL, lng REAL,  -- 그래서 좌표를 여기 직접 든다 (이어탐색·지도 표시용)
+  depth     INTEGER NOT NULL,
+  reason    TEXT NOT NULL
+);
+CREATE INDEX frontier_run ON frontier(run_id);
+
+-- 경고 — 런 도중 사람이 알아야 할 일 (trailwalk/warn.py 의 두 형태를 보존).
+--   once  = 1회성. 발생 즉시 한 행.
+--   tally = 집계형. (run_id, code) 당 한 행을 UPSERT — 런로그는 run_end 에서만
+--           완성돼 중간에 죽으면 통째로 사라졌는데, 여기서는 런 도중에 내구화된다.
+CREATE TABLE warning (
+  warning_id  INTEGER PRIMARY KEY,
+  run_id      INTEGER NOT NULL REFERENCES run(run_id) ON DELETE CASCADE,
+  kind        TEXT NOT NULL,           -- once | tally
+  code        TEXT NOT NULL,
+  count       INTEGER,                 -- 집계형만
+  message     TEXT NOT NULL,
+  detail_json TEXT,
+  created_at  TEXT NOT NULL
+);
+CREATE INDEX warning_run ON warning(run_id);
+CREATE UNIQUE INDEX warning_tally ON warning(run_id, code) WHERE kind = 'tally';
+
+-- 디버깅용 자유형 로그. 웹이 읽는 계약이 아니다 — 그건 warning 이다 (runlog 와 같다).
+CREATE TABLE event (
+  event_id     INTEGER PRIMARY KEY,
+  run_id       INTEGER NOT NULL REFERENCES run(run_id) ON DELETE CASCADE,
+  kind         TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at   TEXT NOT NULL
+);
+CREATE INDEX event_run ON event(run_id, event_id);
+
+-- 사람이 붙인 라벨. **이 스키마에서 UPDATE 되는 유일한 테이블** — 그래서 여기에만
+-- updated_at 이 있다. DB 는 gitignore 되므로 백업은 export_labels 로 뺀다.
+CREATE TABLE label (
+  label_id   INTEGER PRIMARY KEY,
+  pano_id    TEXT NOT NULL REFERENCES pano(pano_id),
+  heading    REAL,                     -- NULL = 이 pano 전체에 대한 라벨 (기본)
+  is_trail   INTEGER NOT NULL,
+  note       TEXT,
+  author     TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX label_one ON label(pano_id, COALESCE(heading, -1.0));
+
+-- 탐색 잡 큐. 웹이 넣고 워커 데몬이 집는다. 상태 전이와 claim 규칙은 워커 쪽에.
+CREATE TABLE job (
+  job_id    INTEGER PRIMARY KEY,
+  state     TEXT NOT NULL,             -- queued|claimed|running|done|failed|canceled
+  cancel_requested INTEGER NOT NULL DEFAULT 0,
+  start_lat REAL NOT NULL, start_lng REAL NOT NULL, bearing REAL NOT NULL,
+  radius_m  REAL NOT NULL, max_seconds REAL NOT NULL,
+  config_path TEXT,
+  run_id    INTEGER REFERENCES run(run_id),
+  worker_id TEXT,
+  heartbeat_at TEXT,
+  progress_json TEXT,
+  created_at TEXT NOT NULL, claimed_at TEXT, finished_at TEXT,
+  stop_reason TEXT, error TEXT
+);
+CREATE INDEX job_queue ON job(state, job_id);
+"""
+
+
+class StoreError(RuntimeError):
+    """DB 를 열 수 없거나 스키마가 안 맞는다. 조용히 빈 DB 를 만들면 안 되는 상황."""
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def connect(path: Path | str, *, read_only: bool = False) -> sqlite3.Connection:
+    """PRAGMA 까지 적용된 커넥션. 닫는 것은 호출자 몫이다.
+
+    웹은 요청마다 열고 닫는다 — 리더가 커넥션을 오래 잡으면 스냅샷 때문에
+    WAL 체크포인트가 못 돌아, 6시간 런 동안 WAL 파일이 계속 자란다.
+    """
+    if read_only:
+        conn = sqlite3.connect(f"file:{Path(path)}?mode=ro", uri=True)
+    else:
+        conn = sqlite3.connect(str(path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 5000")
+    if not read_only:
+        # WAL: 워커가 쓰는 동안 웹이 읽는다. NORMAL: 프로세스 크래시엔 안전하고,
+        # 전원 차단에서만 마지막 커밋을 잃는데 그건 판정 1건(~2초)이다.
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
+    return conn
+
+
+def migrate(conn: sqlite3.Connection) -> None:
+    """빈 DB 면 스키마를 만들고, 버전이 다르면 거부한다.
+
+    자동 업그레이드를 하지 않는 이유: 스키마가 바뀔 정도의 변경이면 무엇이
+    어떻게 옮겨지는지 사람이 봐야 한다. 지금은 백필(backfill_runs.py)로 언제든
+    처음부터 다시 만들 수 있는 DB 라, "지우고 다시" 가 정직한 업그레이드다.
+    """
+    has = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_meta'").fetchone()
+    if has is None:
+        conn.executescript(SCHEMA_SQL)
+        conn.execute("INSERT INTO schema_meta VALUES ('version', ?)",
+                     (str(SCHEMA_VERSION),))
+        conn.commit()
+        return
+    row = conn.execute("SELECT value FROM schema_meta WHERE key='version'").fetchone()
+    found = row[0] if row else "(없음)"
+    if found != str(SCHEMA_VERSION):
+        raise StoreError(
+            f"DB 스키마 버전이 다르다: 파일 {found}, 코드 {SCHEMA_VERSION}. "
+            f"이 DB 는 백필로 재생성 가능하다 — 파일을 지우고 "
+            f"backfill_runs.py 를 다시 돌릴 것")
+
+
+# ── 낮은 수준 insert. RunWriter 와 백필이 같은 것을 쓴다 ─────────────────────
+
+def upsert_pano(conn: sqlite3.Connection, pano_id: str, lat: float, lng: float,
+                captured_at: str | None = None, now: str | None = None) -> None:
+    """좌표 선착순 고정. 이미 있으면 아무것도 안 바꾼다 (모듈 독스트링 원칙 2)."""
+    conn.execute(
+        "INSERT INTO pano (pano_id, lat, lng, captured_at, first_seen) "
+        "VALUES (?, ?, ?, ?, ?) ON CONFLICT(pano_id) DO NOTHING",
+        (pano_id, round(lat, 7), round(lng, 7), captured_at, now or _now()))
+
+
+def insert_run(conn: sqlite3.Connection, *, name: str, kind: str, provider: str,
+               source: str, started_at: str, header_json: str,
+               source_sha256: str | None = None,
+               start_lat: float | None = None, start_lng: float | None = None,
+               start_bearing: float | None = None,
+               prompt_version: str | None = None, prompt_sha256: str | None = None,
+               schema_name: str | None = None, vlm_url: str | None = None,
+               min_nature_level: int | None = None, require_footway: int | None = None,
+               trail_surfaces_json: str | None = None) -> int:
+    cur = conn.execute(
+        "INSERT INTO run (name, kind, provider, source, source_sha256, started_at, "
+        " start_lat, start_lng, start_bearing, prompt_version, prompt_sha256, "
+        " schema_name, vlm_url, min_nature_level, require_footway, "
+        " trail_surfaces_json, header_json) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (name, kind, provider, source, source_sha256, started_at,
+         start_lat, start_lng, start_bearing, prompt_version, prompt_sha256,
+         schema_name, vlm_url, min_nature_level, require_footway,
+         trail_surfaces_json, header_json))
+    return cur.lastrowid
+
+
+def insert_verdict(conn: sqlite3.Connection, *, run_id: int, pano_id: str,
+                   heading: float, is_trail: bool, created_at: str,
+                   step: int | None = None, confidence: int | None = None,
+                   camera_surface: str | None = None, nature_level: int | None = None,
+                   footway: int | None = None, prompt_tokens: int | None = None,
+                   cached_tokens: int | None = None, completion_tokens: int | None = None,
+                   latency_ms: float | None = None, src_format: str | None = None,
+                   image_path: str | None = None, sample_id: str | None = None,
+                   label: bool | None = None) -> int:
+    cur = conn.execute(
+        "INSERT INTO verdict (run_id, pano_id, heading, step, is_trail, confidence, "
+        " camera_surface, nature_level, footway, prompt_tokens, cached_tokens, "
+        " completion_tokens, latency_ms, src_format, image_path, sample_id, label, "
+        " created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (run_id, pano_id, round(heading, 1), step, int(is_trail), confidence,
+         camera_surface, nature_level, footway, prompt_tokens, cached_tokens,
+         completion_tokens, latency_ms, src_format, image_path, sample_id,
+         None if label is None else int(label), created_at))
+    return cur.lastrowid
+
+
+def insert_warning(conn: sqlite3.Connection, *, run_id: int, kind: str, code: str,
+                   message: str, created_at: str, count: int | None = None,
+                   detail: dict | None = None) -> None:
+    conn.execute(
+        "INSERT INTO warning (run_id, kind, code, count, message, detail_json, "
+        " created_at) VALUES (?, ?, ?, ?, ?, ?, ?) "
+        # 집계형은 (run_id, code) 당 한 행 — 부분 유니크 인덱스 warning_tally 가 잡는다
+        "ON CONFLICT(run_id, code) WHERE kind = 'tally' DO UPDATE SET "
+        " count = excluded.count, message = excluded.message, "
+        " detail_json = excluded.detail_json",
+        (run_id, kind, code, count, message,
+         json.dumps(detail, ensure_ascii=False) if detail else None, created_at))
+
+
+def insert_event(conn: sqlite3.Connection, *, run_id: int, kind: str,
+                 payload: dict, created_at: str) -> None:
+    conn.execute(
+        "INSERT INTO event (run_id, kind, payload_json, created_at) VALUES (?, ?, ?, ?)",
+        (run_id, kind, json.dumps(payload, ensure_ascii=False), created_at))
+
+
+def write_result(conn: sqlite3.Connection, run_id: int, res) -> None:
+    """ExploreResult 의 그래프(nodes/frontier)와 원점을 싣는다.
+
+    판정(probe)은 RunWriter 가 실시간으로 썼다 — 그래프는 런이 끝나야
+    완성되는 것이라 여기서 한 번에 넣는다. 경계층(runner)이 부른다.
+    """
+    now = _now()
+    for n in res.nodes:
+        upsert_pano(conn, n["pano_id"], n["lat"], n["lng"], now=now)
+        conn.execute(
+            "INSERT INTO node (run_id, pano_id, depth, parent_pano, is_trail, skipped) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (run_id, n["pano_id"], n["depth"], n["parent"],
+             None if n["is_trail"] is None else int(n["is_trail"]),
+             int(n.get("skipped", False))))
+    for f in res.frontier:
+        conn.execute(
+            "INSERT INTO frontier (run_id, from_pano, pano_id, lat, lng, depth, reason) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (run_id, f.get("from_pano"), f["pano_id"], f.get("lat"), f.get("lng"),
+             f["depth"], f["reason"]))
+    if res.origin_pano and res.origin:
+        # 즉시 취소/예산 소진이면 nodes 가 비어 원점 pano 행이 아직 없다 —
+        # run.origin_pano 가 pano 를 참조하므로 먼저 만들어 준다
+        upsert_pano(conn, res.origin_pano, res.origin[0], res.origin[1], now=now)
+        conn.execute("UPDATE run SET origin_pano = ? WHERE run_id = ?",
+                     (res.origin_pano, run_id))
+    conn.commit()
+
+
+def finish_run(conn: sqlite3.Connection, run_id: int, *, wall_s: float,
+               finished_at: str | None = None, stop_reason: str | None = None,
+               origin_pano: str | None = None, summary: dict | None = None) -> None:
+    conn.execute(
+        "UPDATE run SET finished_at = ?, stop_reason = ?, wall_s = ?, "
+        " origin_pano = COALESCE(?, origin_pano), summary_json = ? WHERE run_id = ?",
+        (finished_at or _now(), stop_reason, round(wall_s, 1), origin_pano,
+         json.dumps(summary, ensure_ascii=False) if summary else None, run_id))
+
+
+# ── RunWriter — RunLog 의 자리를 그대로 받는다 ───────────────────────────────
+
+class RunWriter:
+    """explore() 가 부르는 4개 메서드(probe/event/warn/tally)와 finish 를
+    RunLog 와 같은 시그니처로 낸다 — explore.py 는 한 글자도 안 고친다.
+
+    RunLog 에서 그대로 승계한 계약:
+      - probe 1건 = 커밋 1번 (줄마다 flush 하던 것과 같다)
+      - tally 의 code 검증은 **호출 시점** — finish 로 미루면 finally 안에서
+        터져 런 요약이 통째로 날아간다
+      - 집계형 문구 생성 실패는 finish 를 막지 않는다 (자리표시자로 격하)
+      - 이미지 파일명은 번호 앞 — 이름순이 곧 호출 순서다
+
+    conn 을 닫는 것은 호출자 몫이다 (경계층이 커넥션 수명을 관리한다).
+    """
+
+    def __init__(self, conn: sqlite3.Connection, header: dict, *, name: str,
+                 image_dir: Path | None = None, source: str = "live"):
+        self.conn = conn
+        self.image_dir = Path(image_dir) if image_dir else None
+        if self.image_dir:
+            self.image_dir.mkdir(parents=True, exist_ok=True)
+        self._n = 0
+        self._t0 = time.time()
+        self._tallies: dict[str, dict] = {}
+        self._finished = False
+
+        prompt = header.get("prompt") or {}
+        trail_surfaces = header.get("trail_surfaces")
+        require_footway = header.get("require_footway")
+        self.run_id = insert_run(
+            conn,
+            name=name,
+            # 옛 walk 런로그에는 mode 가 없다 — 백필이 같은 규칙을 쓴다
+            kind=header.get("mode") or ("eval" if "labels_path" in header else "walk"),
+            provider=header.get("provider", "?"),
+            source=source,
+            started_at=header.get("ts") or _now(),
+            start_lat=(header.get("start") or [None, None])[0],
+            start_lng=(header.get("start") or [None, None])[1],
+            start_bearing=header.get("start_bearing"),
+            prompt_version=prompt.get("system_version"),
+            prompt_sha256=prompt.get("system_sha256"),
+            schema_name=header.get("schema"),
+            vlm_url=header.get("url"),
+            min_nature_level=header.get("min_nature_level"),
+            require_footway=None if require_footway is None else int(require_footway),
+            trail_surfaces_json=(json.dumps(trail_surfaces, ensure_ascii=False)
+                                 if trail_surfaces is not None else None),
+            header_json=json.dumps(header, ensure_ascii=False),
+        )
+        conn.commit()
+
+    def probe(self, *, step: int, pano_id: str, lat: float, lng: float,
+              heading: float, verdict, src_format: str,
+              image: bytes | None = None,
+              label: bool | None = None, sample_id: str | None = None) -> None:
+        self._n += 1
+        image_path = None
+        if self.image_dir and image:
+            # 확장자는 주장이 아니라 감지된 실제 포맷을 따른다 (runlog 와 같다)
+            ext = {"JPEG": "jpg", "PNG": "png", "WEBP": "webp"}.get(src_format, "bin")
+            fname = (f"{self._n:03d}_s{step:02d}_{pano_id}_{heading:05.1f}_"
+                     f"{'T' if verdict.is_trail else 'F'}.{ext}")
+            (self.image_dir / fname).write_bytes(image)
+            # app/runs/images/ 기준 상대경로 — 웹이 이 밑에서만 서빙한다
+            image_path = f"{self.image_dir.name}/{fname}"
+        upsert_pano(self.conn, pano_id, lat, lng)
+        insert_verdict(
+            self.conn, run_id=self.run_id, pano_id=pano_id, heading=heading,
+            step=step, is_trail=bool(verdict.is_trail), confidence=verdict.confidence,
+            camera_surface=verdict.camera_surface, nature_level=verdict.nature_level,
+            footway=verdict.footway, prompt_tokens=verdict.prompt_tokens,
+            cached_tokens=verdict.cached_tokens,
+            completion_tokens=verdict.completion_tokens,
+            latency_ms=round(verdict.latency_ms, 1), src_format=src_format,
+            image_path=image_path, sample_id=sample_id, label=label,
+            created_at=_now())
+        self.conn.commit()   # 판정 1건 = 커밋 1번. 중간에 죽어도 거기까지는 남는다
+
+    def event(self, kind: str, **kw) -> None:
+        insert_event(self.conn, run_id=self.run_id, kind=kind, payload=kw,
+                     created_at=_now())
+        self.conn.commit()
+
+    def warn(self, code: str, **detail) -> None:
+        """1회성 경고. 즉시 한 행 — 런이 중간에 죽어도 남는다."""
+        w = warn_mod.make(code, **detail)
+        insert_warning(self.conn, run_id=self.run_id, kind="once", code=code,
+                       message=w["message"], count=w.get("count"),
+                       detail=w.get("detail"), created_at=_now())
+        self.conn.commit()
+
+    def tally(self, code: str, **detail) -> None:
+        """집계형 경고. 같은 code 를 여러 번 불러 count 를 올린다.
+
+        count 규칙은 RunLog.tally 와 같다: `count=` 를 주면 그만큼 더하고,
+        안 주면 1이다. 호출할 때마다 UPSERT 하므로 런 도중에도 내구적이다 —
+        런로그는 run_end 에서만 완성돼 중간에 죽으면 통째로 사라졌다.
+        """
+        if code not in warn_mod.TEXT:
+            raise warn_mod.UnknownWarning(
+                f"모르는 경고 code: {code!r}. trailwalk/warn.py 의 TEXT 에 추가할 것")
+        t = self._tallies.setdefault(code, {"count": 0})
+        t["count"] += int(detail.get("count", 1))
+        t.update({k: v for k, v in detail.items() if k != "count"})
+        try:
+            w = warn_mod.make(code, **t)
+        except warn_mod.UnknownWarning as e:
+            # 문구에 필요한 필드가 아직 없다. 여기서 터뜨리면 explore 루프가 죽는다 —
+            # 시끄러운 자리표시자로 격하한다 (RunLog._tallied 와 같은 처리)
+            w = {"code": code, "count": t["count"],
+                 "message": f"({code}) 경고 문구를 만들지 못했다: {e}"}
+        insert_warning(self.conn, run_id=self.run_id, kind="tally", code=code,
+                       message=w["message"], count=w.get("count", t["count"]),
+                       detail=w.get("detail"), created_at=_now())
+        self.conn.commit()
+
+    def finish(self, **summary) -> None:
+        """run 행을 닫는다. stop_reason 은 summary 에서 꺼내고 나머지는 통째로 남긴다."""
+        stop_reason = summary.pop("stop_reason", None)
+        finish_run(self.conn, self.run_id, wall_s=time.time() - self._t0,
+                   stop_reason=stop_reason, summary=summary or None)
+        self.conn.commit()
+        self._finished = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        # finish 없이 나가면(예외) run 은 finished_at IS NULL 로 남는다 — 그게
+        # "중간에 죽은 런" 의 정직한 표현이다. 여기서 몰래 닫지 않는다.
+        return False

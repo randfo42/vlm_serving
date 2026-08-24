@@ -28,16 +28,21 @@ run:
   # 어느 쪽을 먼저 물을지(정렬)만 정한다. 예산이 모자랄 때만 결과가 갈린다
   bearing: 0.0
 
-  # null 이면 app/runs/<UTC시각>-<provider>[-explore].jsonl
+  # (explore) 런 이름 — DB 의 run.name 이자 이미지 폴더명. null 이면
+  # <UTC시각>-<provider>-explore. 경로를 적어도 stem 만 이름으로 쓴다
+  # (옛 설정이 .jsonl 경로를 적던 자리라 그대로 읽힌다).
+  # eval(run_eval.py)은 아직 런로그 JSONL 을 쓴다 → eval.out
   out: null
 
   # (explore 전용) nodes/probes/frontier 를 JSON 으로 덤프할 경로.
   # eval/plot_explore.py 의 입력이다. null 이면 안 쓴다
   dump: null
 
-  # probe 이미지를 남겨 판정을 눈으로 감사한다. 기본이 꺼진 이유는 성능이
-  # 아니라 지도 사업자 약관상 이미지 캐싱이 회색지대이기 때문이다
-  save_images: false
+  # probe 이미지를 남긴다 — 웹에서 "모델이 무엇을 보고 그 판정을 했나" 를
+  # 사람이 확인하고 라벨을 붙이는 데 그 바이트가 필요하다. 켠 채 로컬에만
+  # 두는 것은 약관 회색지대(→ docs/23 §2)와 로컬 전용 사용 범위 안이고,
+  # 배포로 범위가 넓어지면 §2 부터 다시 본다. runs/images/ 는 gitignore.
+  save_images: true
 
   # 브라우저를 띄워서 본다. 캡처가 검게 나오면 첫 번째 의심 대상이다
   headed: false
@@ -419,3 +424,21 @@ eval:
   # 서버가 죽어도(Metal OOM) 재시작 후 같은 명령이 곧 재개다.
   # 재개는 기존 파일의 prompt/labels 지문이 현재 설정과 같을 때만 허용된다.
   resume: true
+
+web:
+  # 로컬 전용이다. 루프백 밖에 바인드하면 수집한 pano 좌표가 LAN 에 노출된다 —
+  # 이 저장소가 public 인 것과 같은 이유로 막는다. 배포로 범위를 넓히려면
+  # 약관(docs/23 §2)부터 다시 봐야 한다.
+  #
+  # ⚠️ 접속 주소는 바인드 주소가 아니라 Kakao 개발자 콘솔에 **등록된 도메인**
+  # 쪽을 쓴다 (localhost 등록이면 http://localhost:<port>). Kakao 는
+  # localhost 와 127.0.0.1 을 다른 도메인으로 본다 — 지도가 안 뜨는 첫 원인.
+  host: 127.0.0.1
+
+  # vLLM(8000)·Prometheus(9090) 등 이 프로젝트 주변에서 이미 쓰는 포트와
+  # 안 겹치는 값. 정한 근거는 그것뿐이다.
+  port: 8321
+
+  # 판정 정본(SQLite). app/ 기준 상대경로. app/runs/ 아래라 .gitignore 의
+  # app/runs/*.db* 가 커밋을 막는다 — pano 좌표와 vlm.url(LAN IP)이 든다.
+  db: runs/trailwalk.db

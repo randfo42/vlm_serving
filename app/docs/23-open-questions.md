@@ -686,7 +686,13 @@ pano 는 `1198162403` 이고 `shot_tool=202`(차량) · `st_type=이면도로` �
 
 ## 🟡 9. 공개 경계층이 없다 — 웹이 부를 함수가 없다
 
-**미결.** 지금 앱을 밖에서 부르는 방법은 CLI 뿐이다.
+**경계층 자체는 섰다 (2026-08-24)** — `trailwalk/runner.py` 의
+`run_explore(RunRequest) -> RunOutcome`. 아래 요건 셋을 그대로 구현했고
+(예외 강등 표·원문 전문 보존·ExitStack 의 close 보장), 남은 것은
+`run_explore.py` 를 이 위의 얇은 CLI 로 줄이는 것과 웹 서버 본체다.
+아래 서술은 그 설계 근거로 남긴다.
+
+지금 앱을 밖에서 부르는 방법은 CLI 뿐이다.
 
 `explore()` 의 시그니처는 `(provider, client, start, start_bearing, cfg, log)` 고,
 provider 와 client 는 호출자가 직접 만들어 넘겨야 한다. 그 배선은 지금
@@ -734,8 +740,10 @@ provider 와 client 는 호출자가 직접 만들어 넘겨야 한다. 그 배�
 
 ### 함께 볼 것
 
-`ExploreResult` 에 **스냅된 시작 좌표가 없다.** 예산이 즉시 끊겨 `nodes` 가
-비어도 지도에 원점은 그려야 하므로 경계가 이 값을 필요로 한다.
+~~`ExploreResult` 에 스냅된 시작 좌표가 없다.~~ **넣었다 (2026-08-24)** —
+`origin`·`origin_pano`. 스냅 전에 끝난 런(no_coverage 등)은 None 이고, 그때는
+경계가 요청 좌표를 대신 쓴다. `cancel` 콜백도 같은 날 들어갔다 — 확인 시점은
+예산 검사와 같은 두 곳이라 취소돼도 못 간 갈래가 frontier 에 남는다.
 
 §8 의 "웹 UI (로컬 전용)" 항목이 이 절의 소비자다.
 

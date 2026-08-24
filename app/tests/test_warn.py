@@ -34,6 +34,26 @@ def test_모든_code가_문구를_갖는다():
     assert all(isinstance(t, str) and t for t in warn.TEXT.values())
 
 
+def test_경계층_강등_문구는_원문_전문을_담는다():
+    """runner 가 예외를 stop_reason 으로 강등할 때 쓰는 code 들 (→ docs/23 §9).
+    이 레포의 설정 예외는 여러 줄에 해결 방법을 적는다 — 첫 줄만 남기면
+    증상만 남고 해결책이 사라지므로, 여러 줄이 그대로 실려야 한다."""
+    multi = "REST 키만 있다.\nJS 키를 .env 에 추가할 것:\n  KAKAO_JS_KEY=..."
+    w = warn.make("settings_error", error=multi)
+    assert multi in w["message"], "원문이 잘렸다"
+    w = warn.make("prompt_drift", error="sha 불일치\n프롬프트 파일을 되돌릴 것")
+    assert "되돌릴 것" in w["message"]
+    w = warn.make("internal_error", error="KeyError: 'x'")
+    assert "KeyError" in w["message"]
+
+
+def test_canceled는_판정_수를_요구한다():
+    """"몇 건까지 하고 멈췄나" 없이는 부분 결과를 쓸지 판단할 수 없다."""
+    assert "3건" in warn.make("canceled", verdicts=3)["message"]
+    with pytest.raises(warn.UnknownWarning):
+        warn.make("canceled")
+
+
 def test_count는_최상위로_올린다():
     """웹이 detail 스키마를 몰라도 "몇 건인가" 는 읽을 수 있어야 한다."""
     w = warn.make("capture_failed", count=3, pano_id="P1")
