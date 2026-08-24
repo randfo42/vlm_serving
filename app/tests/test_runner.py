@@ -183,3 +183,25 @@ def test_요청의_반경과_시간이_설정을_덮는다(monkeypatch, tmp_path
     run_explore(RunRequest(start=(37.5, 127.0), config_path=cfg,
                            radius_m=123.0, max_seconds=45.0), db=db, name="r-o")
     assert seen == {"radius": 123.0, "seconds": 45.0}
+
+
+def test_같은_run_이름_재실행은_거부하되_provider는_닫는다(monkeypatch, tmp_path):
+    """run.name 은 UNIQUE(백필 멱등성의 축)다. 고정 이름으로 두 번 돌리면
+    두 번째는 깨끗이 거부돼야 하고 — 판정은 덮어쓰지 않는다 — 그 경로에서도
+    브라우저(provider)가 새면 안 된다. RunWriter 가 close 등록보다 먼저
+    던지던 시절의 회귀 방어."""
+    _prov, db, cfg = wire(monkeypatch, tmp_path)
+    out1 = run_explore(RunRequest(start=(37.5, 127.0), config_path=cfg),
+                       db=db, name="fixed")
+    assert out1.ok
+    prov2 = TrackedProvider(GRAPH)
+    monkeypatch.setattr(runner.providers, "make",
+                        lambda name, settings=None, **kw: prov2)
+    out2 = run_explore(RunRequest(start=(37.5, 127.0), config_path=cfg),
+                       db=db, name="fixed")
+    assert not out2.ok and out2.stop_reason == "settings_error"
+    assert "이미 DB" in out2.warnings[0]["message"]
+    assert prov2.closed, "거부 경로에서 provider 가 샜다"
+    conn = store.connect(db, read_only=True)
+    assert conn.execute("SELECT COUNT(*) FROM run").fetchone()[0] == 1
+    conn.close()

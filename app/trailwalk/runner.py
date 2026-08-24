@@ -18,6 +18,7 @@ run_explore.py(CLI) 안에만 있어서, 웹을 붙이는 순간 같은 배선�
 from __future__ import annotations
 
 import contextlib
+import sqlite3
 import time
 import traceback
 from collections.abc import Callable
@@ -72,6 +73,9 @@ class RunOutcome:
     skipped: int = 0
     frontier: int = 0
     wall_s: float = 0.0
+    # ExploreResult 원본. CLI 의 dump(plot_explore 입력)와 frontier 목록
+    # 출력용이다 — 웹·워커는 이걸 읽지 않고 DB 를 읽는다. 배선 실패면 None
+    result: object | None = field(repr=False, default=None)
 
 
 def run_explore(req: RunRequest, *, db: Path | str, name: str | None = None,
@@ -146,14 +150,25 @@ def run_explore(req: RunRequest, *, db: Path | str, name: str | None = None,
             prov = providers.make(st.run.provider, settings=st)
         except (ProviderError, RuntimeError) as e:
             return prefail("provider_error", str(e))
-        writer = store.RunWriter(
-            conn, header, name=run_name,
-            image_dir=(APP / "runs" / "images" / run_name)
-            if st.run.save_images else None)
+        # make **직후**, RunWriter 보다 먼저 등록한다 — RunWriter 가 던져도
+        # (아래 이름 중복 등) 브라우저는 닫혀야 한다. writer 는 지연 바인딩:
+        # 아직 없으면 close 만 하고, 있으면 close 실패를 event 로 남긴다
+        writer = None
+        stack.callback(lambda: _safe_close(prov, writer))
+        try:
+            writer = store.RunWriter(
+                conn, header, name=run_name,
+                image_dir=(APP / "runs" / "images" / run_name)
+                if st.run.save_images else None)
+        except sqlite3.IntegrityError:
+            # run.name 은 UNIQUE 다 (백필 멱등성의 축). 설정이 고정 이름을
+            # 들고 있으면 재실행에서 여기로 온다 — 판정을 덮어쓰지 않는 것이
+            # 원칙이므로(판정 불변) 거부가 맞고, 고치는 법을 말해 준다
+            return prefail("settings_error",
+                           f"run 이름 {run_name!r} 가 이미 DB 에 있다. "
+                           f"판정은 덮어쓰지 않는다 — run.out 을 바꾸거나 "
+                           f"비워 둘 것 (비우면 시각으로 이름을 만든다)")
         run_id = writer.run_id
-        # make 직후 등록. 이 사이에 코드가 없어야 "어느 경로로 끝나든 닫힌다"
-        # 가 성립한다 (close 실패는 삼키되 event 로 남긴다 — 결과를 가리면 안 된다)
-        stack.callback(_safe_close, prov, writer)
 
         if hasattr(prov, "on_event"):
             # provider 쪽 신호도 기록하되, 결과 품질에 영향을 주는 것은
@@ -225,7 +240,8 @@ def run_explore(req: RunRequest, *, db: Path | str, name: str | None = None,
         calls=res.calls if res else 0,
         skipped=res.skipped if res else 0,
         frontier=len(res.frontier) if res else 0,
-        wall_s=time.time() - t0)
+        wall_s=time.time() - t0,
+        result=res)
 
 
 def _safe_close(prov, writer) -> None:
@@ -234,5 +250,7 @@ def _safe_close(prov, writer) -> None:
     except Exception as e:
         # close 실패가 런 결과를 가리면 안 된다. 하지만 조용히도 안 된다 —
         # 브라우저가 새고 있다는 신호다 (기록마저 실패하면 그때는 접는다)
-        with contextlib.suppress(Exception):
-            writer.event("provider_close_failed", error=f"{type(e).__name__}: {e}")
+        if writer is not None:
+            with contextlib.suppress(Exception):
+                writer.event("provider_close_failed",
+                             error=f"{type(e).__name__}: {e}")

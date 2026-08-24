@@ -137,27 +137,25 @@ python app/labels/fetch_gil_seoul.py --detail   # + 경유지 (~3분)
 
 ---
 
-## 런로그
+## 판정 저장소
 
-실행마다 `runs/<시각>-<provider>.jsonl` 이 생긴다. 한 줄 = VLM 호출 한 번.
+explore 런은 SQLite 한 파일(`runs/trailwalk.db`, 설정 `web.db`)에 쌓인다.
+verdict 한 행 = VLM 호출 한 번. 판정은 불변이고, 재판정은 새 행이다.
 
 ```bash
-python -c "
-import json,sys
-for l in open(sys.argv[1]):
-    d=json.loads(l)
-    if d['type']=='probe':
-        print(f\"s{d['step']} h{d['heading']:5.1f} trail={d['is_trail']} \"
-              f\"pt={d['prompt_tokens']} cached={d['cached_tokens']} {d['latency_ms']:.0f}ms\")
-" runs/<파일>.jsonl
+sqlite3 app/runs/trailwalk.db "
+  SELECT r.name, v.step, v.heading, v.is_trail, v.nature_level, v.latency_ms
+  FROM verdict v JOIN run r USING(run_id) ORDER BY v.verdict_id DESC LIMIT 20"
 ```
 
-보존할 런은 `runs/keep/` 으로 옮긴다 (`runs/*.jsonl` 은 gitignore).
+DB 는 gitignore 다(수집 좌표가 든다). 옛 런로그 JSONL 은
+`app/backfill_runs.py` 로 넣는다. **eval(run_eval.py)은 아직 런로그 JSONL 을
+쓴다** — `runs/<시각>-eval.jsonl`, 한 줄 = 판정 한 건.
 
 ### 판정을 눈으로 감사한다
 
-`run.save_images: true` 로 켜면 probe 이미지가 `runs/images/<런이름>/` 에 쌓이고,
-런로그의 각 probe 줄에 `image` 필드로 파일명이 붙는다.
+`run.save_images: true`(기본)면 probe 이미지가 `runs/images/<런이름>/` 에
+쌓이고 verdict 의 `image_path` 가 그 파일을 가리킨다.
 
 ```bash
 # 설정에서 provider: kakao, save_images: true
