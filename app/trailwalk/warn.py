@@ -35,6 +35,15 @@ TEXT: dict[str, str] = {
     "image_ignored":     "서버가 이미지를 무시했다 — 판정이 전부 환각이다",
     "server_dead":       "VLM 서버 백엔드가 죽었다. 사람이 재시작해야 한다",
     "vlm_error":         "VLM 호출이 복구 불가로 실패했다: {error}",
+    # 경계층(runner)이 예외를 stop_reason 으로 강등할 때 쓴다 (→ docs/23 §9).
+    # {error} 에는 예외 문구 **전문**이 들어간다 — 이 레포의 설정 예외는 여러
+    # 줄에 걸쳐 해결 방법을 적으므로, 첫 줄만 남기면 증상만 남고 해결책이
+    # 사라진다. 여러 줄 message 는 의도다.
+    "settings_error":    "설정을 읽지 못했다:\n{error}",
+    "prompt_drift":      "프롬프트 해시가 어긋났다 — 판정을 비교할 수 없다:\n{error}",
+    "internal_error":    "예상 못한 실패로 런이 끊겼다: {error}",
+    # 실패가 아니다 — 부분 결과는 유효하다 (explore 의 canceled 종료와 짝)
+    "canceled":          "사용자가 취소했다 (판정 {verdicts}건 뒤)",
     # ── 결과를 믿을지 판단해야 한다 (집계형) ──
     "neighbors_missing": "이웃 목록을 못 얻은 지점이 {count}곳 있었다 — 그만큼 갈래를 못 봤다",
     "capture_failed":    "캡처가 실패한 방향이 {count}건 있었다 — 판정을 못 받고 건너뛴 갈래다",
