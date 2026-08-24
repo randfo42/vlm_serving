@@ -320,11 +320,13 @@ v4 이후 스키마는 `is_trail` 을 아예 내지 않는다. `VlmClient` 가 �
 | v1~v3 | `is_trail` 그대로 | (없음) |
 | v4 | `camera_surface` | `vlm.trail_surfaces` |
 | v5 | `nature_level` | `vlm.min_nature_level` |
-| v6 | `nature_level` + `footway` | `min_nature_level` **AND** `require_footway` | 경계(보행자우선 골목을
-산책로로 셀 것인가)는 라벨 없이 못 정하는데, 프롬프트 문장에 새기면 경계를
-옮길 때마다 새 프롬프트 버전이 되고 **이미 받아 둔 판정을 못 쓴다.**
-설정에 두면 같은 `camera_surface` 를 다시 해석하는 것만으로 A/B 가 된다
-(→ `23-open-questions.md` §5).
+| v6 | `nature_level` + `footway` | `min_nature_level` **AND** `require_footway` |
+
+**경계를 왜 프롬프트가 아니라 설정에 두나.** 경계는 라벨 없이 못 정한다 —
+보행자우선 골목을 산책로로 셀 것인가, 녹지 등급 몇부터 셀 것인가. 그걸
+프롬프트 문장에 새기면 경계를 옮길 때마다 새 프롬프트 버전이 되고 **이미
+받아 둔 판정을 못 쓴다.** 설정에 두면 같은 응답을 다시 해석하는 것만으로
+A/B 가 된다 (→ `23-open-questions.md` §5).
 
 그래서 런로그가 `is_trail` 과 **원본 값을 다** 남긴다 (`camera_surface` ·
 `nature_level` · `footway`). 유도된 값만 남기면 경계를 옮긴 순간 옛 런이
