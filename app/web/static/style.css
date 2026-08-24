@@ -48,3 +48,11 @@ canvas.pano-layer { position: absolute; inset: 0; pointer-events: none; z-index:
 
 #fatal { position: fixed; inset: 40px 0 0 0; z-index: 40; padding: 40px;
   background: #fff; white-space: pre-wrap; color: #d03b3b; }
+
+.labelbox { margin: 8px 0; padding: 8px; background: #f7f7f8; border-radius: 4px; }
+.labelbtns { display: flex; gap: 6px; margin: 6px 0; }
+.labelbtns button { font: inherit; padding: 4px 10px; border: 1px solid #ccc;
+  border-radius: 4px; background: #fff; cursor: pointer; }
+.labelbtns button:hover { background: #eee; }
+#labelnote { width: 100%; font: inherit; padding: 4px 6px; border: 1px solid #ccc;
+  border-radius: 4px; }

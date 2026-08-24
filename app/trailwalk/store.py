@@ -621,3 +621,80 @@ def counts(conn: sqlite3.Connection) -> dict:
     """/api/health 용. pano 수는 R*Tree 로 갈아탈 때를 아는 계기판이기도 하다."""
     return {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
             for t in ("pano", "verdict", "run", "label", "job")}
+
+
+# ── 라벨 — 이 스키마에서 UPDATE 되는 유일한 것 ──────────────────────────────
+
+def put_label(conn: sqlite3.Connection, *, pano_id: str, is_trail: bool,
+              note: str | None = None, heading: float | None = None,
+              author: str = "local", updated_at: str | None = None) -> dict:
+    """만들거나 고친다. created_at 은 처음 값을 지키고 updated_at 만 움직인다 —
+    "언제 이 판단을 마지막으로 손봤나" 가 라벨과 판정을 가르는 필드다.
+
+    pano 가 DB 에 없으면 sqlite3.IntegrityError (FK) — 지도에 없는 점에
+    라벨을 붙이는 것은 오타이지 데이터가 아니다. 호출자(API)가 404 로 바꾼다.
+    """
+    now = updated_at or _now()
+    hkey = -1.0 if heading is None else heading
+    row = conn.execute(
+        "SELECT label_id FROM label WHERE pano_id = ? "
+        "AND COALESCE(heading, -1.0) = ?", (pano_id, hkey)).fetchone()
+    if row:
+        conn.execute(
+            "UPDATE label SET is_trail = ?, note = ?, author = ?, updated_at = ? "
+            "WHERE label_id = ?",
+            (int(is_trail), note, author, now, row["label_id"]))
+        label_id = row["label_id"]
+    else:
+        label_id = conn.execute(
+            "INSERT INTO label (pano_id, heading, is_trail, note, author,"
+            " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (pano_id, heading, int(is_trail), note, author, now, now)).lastrowid
+    conn.commit()
+    return dict(conn.execute("SELECT * FROM label WHERE label_id = ?",
+                             (label_id,)).fetchone())
+
+
+def delete_label(conn: sqlite3.Connection, label_id: int) -> bool:
+    cur = conn.execute("DELETE FROM label WHERE label_id = ?", (label_id,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def iter_labels(conn: sqlite3.Connection):
+    """내보내기 형식의 **정본**. 웹 라우트(/api/labels/export)와 CLI
+    (export_labels.py)가 같은 dict 를 쓴다 — 형식이 두 곳에 적히면 갈라진다.
+
+    - type 을 web_label 로 둔다: labels/ 파이프라인의 labels.jsonl 과 파일이
+      섞여도 apply_review·report_eval 이 조용히 먹지 않게 (저쪽은 type 없는
+      sample/label 행이다)
+    - 좌표를 함께 싣는다: 복원할 DB 에 pano 행이 없어도 되살릴 수 있어야
+      한다 — DB 는 gitignore 라 이 파일이 라벨의 유일한 백업이다
+    """
+    for r in conn.execute(
+            "SELECT l.*, p.lat, p.lng FROM label l JOIN pano p USING(pano_id) "
+            "ORDER BY l.label_id"):
+        yield {"type": "web_label", "pano_id": r["pano_id"],
+               "lat": r["lat"], "lng": r["lng"], "heading": r["heading"],
+               "is_trail": bool(r["is_trail"]), "note": r["note"],
+               "author": r["author"], "created_at": r["created_at"],
+               "updated_at": r["updated_at"]}
+
+
+def restore_label(conn: sqlite3.Connection, rec: dict) -> str:
+    """내보낸 한 줄을 되살린다. 반환 ∈ {restored, kept}.
+
+    이미 있는 라벨이 더 최신(updated_at)이면 건드리지 않는다 — 복원이
+    그 사이의 새 판단을 덮어쓰면 백업이 데이터를 지우는 도구가 된다.
+    """
+    hkey = -1.0 if rec.get("heading") is None else rec["heading"]
+    row = conn.execute(
+        "SELECT updated_at FROM label WHERE pano_id = ? "
+        "AND COALESCE(heading, -1.0) = ?", (rec["pano_id"], hkey)).fetchone()
+    if row and row["updated_at"] >= rec["updated_at"]:
+        return "kept"
+    upsert_pano(conn, rec["pano_id"], rec["lat"], rec["lng"])
+    put_label(conn, pano_id=rec["pano_id"], is_trail=rec["is_trail"],
+              note=rec.get("note"), heading=rec.get("heading"),
+              author=rec.get("author", "restore"), updated_at=rec["updated_at"])
+    return "restored"

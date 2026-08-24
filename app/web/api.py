@@ -22,11 +22,14 @@ run_web.py 가 경고를 찍는다 — 수집한 pano 좌표가 LAN 에 노출�
 """
 from __future__ import annotations
 
+import json
+import sqlite3
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from trailwalk import config as secrets
 from trailwalk import settings as settings_mod
@@ -35,6 +38,13 @@ from trailwalk import store
 APP_DIR = Path(__file__).resolve().parent.parent          # app/
 IMAGES_ROOT = APP_DIR / "runs" / "images"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+class LabelIn(BaseModel):
+    pano_id: str
+    is_trail: bool
+    note: str | None = None
+    heading: float | None = None      # None = 이 pano 전체 (기본)
 
 
 def get_conn(request: Request):
@@ -142,6 +152,32 @@ def create_app(st: settings_mod.Settings, db: Path) -> FastAPI:
         if d is None:
             raise HTTPException(404, "모르는 run 이다")
         return d
+
+    @app.put("/api/labels")
+    def api_put_label(body: LabelIn, conn=Depends(get_conn)):
+        try:
+            return store.put_label(conn, pano_id=body.pano_id,
+                                   is_trail=body.is_trail, note=body.note,
+                                   heading=body.heading, author="web")
+        except sqlite3.IntegrityError as e:
+            # FK — 지도에 없는 pano. 오타이지 데이터가 아니다
+            raise HTTPException(404, f"모르는 pano 다: {body.pano_id}") from e
+
+    @app.delete("/api/labels/{label_id}", status_code=204)
+    def api_delete_label(label_id: int, conn=Depends(get_conn)):
+        if not store.delete_label(conn, label_id):
+            raise HTTPException(404, "모르는 라벨이다")
+
+    @app.get("/api/labels/export")
+    def api_labels_export(conn=Depends(get_conn)):
+        # 제너레이터로 스트리밍하면 의존성 정리(conn.close)가 먼저 돌아
+        # 닫힌 커넥션을 읽게 된다. 라벨은 사람이 단 수백 건 규모라
+        # 통째로 만들어 보낸다. 형식의 정본은 store.iter_labels 하나다
+        lines = "".join(json.dumps(r, ensure_ascii=False) + "\n"
+                        for r in store.iter_labels(conn))
+        return Response(content=lines, media_type="application/x-ndjson",
+                        headers={"Content-Disposition":
+                                 'attachment; filename="web_labels.jsonl"'})
 
     @app.get("/api/health")
     def api_health(request: Request, conn=Depends(get_conn)):

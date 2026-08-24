@@ -216,6 +216,9 @@ async function openPanel(panoId) {
       tr.classList.add("sel");
     });
   }
+  for (const btn of body.querySelectorAll("[data-label]")) {
+    btn.addEventListener("click", () => saveLabel(panoId, btn.dataset.label));
+  }
   $("panel").hidden = false;
   if (sel) {
     showImage(body, d, sel.verdict_id);
@@ -225,10 +228,22 @@ async function openPanel(panoId) {
 
 function panelHtml(d) {
   const p = d.pano;
-  const label = d.labels.length
-    ? `사람 라벨: <b>${d.labels[0].is_trail ? "산책로 ⭕" : "아님 ❌"}</b>` +
-      ` <span class="muted">(${esc(d.labels[0].updated_at)})</span>`
-    : `<span class="muted">사람 라벨 없음</span>`;
+  const l = d.labels[0];
+  // 라벨은 이 UI 가 존재하는 이유다 — 정확도를 못 재는 병목이 "라벨 7건"
+  // 이었다. 지도 보면서 클릭 한 번으로 ⭕/❌ 를 단다
+  const label = `
+    <div class="labelbox">
+      ${l ? `사람 라벨: <b>${l.is_trail ? "산책로 ⭕" : "아님 ❌"}</b>
+             <span class="muted">(${esc(l.updated_at)})</span>`
+          : `<span class="muted">사람 라벨 없음</span>`}
+      <div class="labelbtns">
+        <button data-label="1">산책로 ⭕</button>
+        <button data-label="0">아님 ❌</button>
+        ${l ? `<button data-label="del">지우기</button>` : ""}
+      </div>
+      <input id="labelnote" placeholder="메모 (근거)"
+             value="${l?.note ? esc(l.note) : ""}">
+    </div>`;
   const rows = d.verdicts.map((v) => `
     <tr class="clickable" data-vid="${v.verdict_id}">
       <td>${esc(v.prompt_version ?? "?")}</td>
@@ -259,6 +274,33 @@ async function showImage(body, d, verdictId) {
   }
   box.innerHTML = `<img src="/api/image/${verdictId}"
     alt="VLM 이 본 장면 (${esc(v.prompt_version)} · h${v.heading})">`;
+}
+
+async function saveLabel(panoId, action) {
+  const d = detailCache.get(panoId);
+  let r;
+  if (action === "del") {
+    r = await fetch(`/api/labels/${d.labels[0].label_id}`, { method: "DELETE" });
+    if (r.ok) d.labels = [];
+  } else {
+    const note = $("panel-body").querySelector("#labelnote")?.value || null;
+    r = await fetch("/api/labels", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pano_id: panoId, is_trail: action === "1", note }),
+    });
+    if (r.ok) d.labels = [await r.json()];
+  }
+  if (!r.ok) {
+    banner(`라벨 저장 실패 (${r.status})`);
+    return;
+  }
+  // 지도 점의 테두리를 즉시 갱신 — 서버 재조회 없이 로컬 반영으로 충분하다
+  // (같은 값을 서버가 방금 확인해 줬다)
+  const p = layer.points.find((x) => x.pano_id === panoId);
+  if (p) p.label = d.labels.length ? (d.labels[0].is_trail ? 1 : 0) : null;
+  layer.draw();
+  openPanel(panoId);      // 패널을 새 상태로 다시 그린다
 }
 
 function closePanel() {
