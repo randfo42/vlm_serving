@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import contextlib
 import sqlite3
+import sys
 import time
 import traceback
 from collections.abc import Callable
@@ -249,8 +250,12 @@ def _safe_close(prov, writer) -> None:
         prov.close()
     except Exception as e:
         # close 실패가 런 결과를 가리면 안 된다. 하지만 조용히도 안 된다 —
-        # 브라우저가 새고 있다는 신호다 (기록마저 실패하면 그때는 접는다)
+        # 브라우저가 새고 있다는 신호다. 기록(DB)이 최선, stderr 가 차선이고,
+        # 어느 쪽으로도 조용히 사라지지는 않는다
+        msg = f"{type(e).__name__}: {e}"
         if writer is not None:
             with contextlib.suppress(Exception):
-                writer.event("provider_close_failed",
-                             error=f"{type(e).__name__}: {e}")
+                writer.event("provider_close_failed", error=msg)
+                return
+        print(f"⚠  provider close 실패 — 브라우저가 샜을 수 있다: {msg}",
+              file=sys.stderr)

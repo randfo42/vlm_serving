@@ -44,6 +44,9 @@ TEXT: dict[str, str] = {
     "internal_error":    "예상 못한 실패로 런이 끊겼다: {error}",
     # 실패가 아니다 — 부분 결과는 유효하다 (explore 의 canceled 종료와 짝)
     "canceled":          "사용자가 취소했다 (판정 {verdicts}건 뒤)",
+    # 백필 전용: 옛 런로그가 run_end 없이 끝났다 (런이 중간에 죽었다).
+    # 실패가 아니다 — 기록된 판정까지는 유효하고, 집계형 경고만 유실됐다
+    "truncated_runlog":  "런로그가 run_end 없이 끝났다 — 기록된 판정까지만 유효하다",
     # ── 결과를 믿을지 판단해야 한다 (집계형) ──
     "neighbors_missing": "이웃 목록을 못 얻은 지점이 {count}곳 있었다 — 그만큼 갈래를 못 봤다",
     "capture_failed":    "캡처가 실패한 방향이 {count}건 있었다 — 판정을 못 받고 건너뛴 갈래다",
