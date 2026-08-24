@@ -91,6 +91,14 @@ class VlmSettings:
     # camera_surface 범주 중 산책로로 셀 것. 범주형 스키마(surface·surface_eval)
     # 에서만 쓰인다 — 불리언 스키마(walk·eval)는 서버가 낸 is_trail 을 그대로 쓴다.
     trail_surfaces: list[str]
+    # nature_level 이 이 값 이상이면 산책로로 센다. 자연 스키마
+    # (nature·nature_eval)에서만 쓰인다. trail_surfaces 와 같은 역할이다 —
+    # 경계를 프롬프트가 아니라 설정에 두어 재판정 없이 옮길 수 있게 한다.
+    min_nature_level: int
+    # footway 가 1 이어야 산책로로 세는가. v6(nature_footway 스키마)에서만
+    # 쓰인다. false 로 두면 녹지 등급만 보는 v5 동작이 된다 — 그 한 줄로
+    # "녹지만" 과 "녹지 AND 인도" 를 재판정 없이 A/B 할 수 있다.
+    require_footway: bool
 
 
 @dataclass(frozen=True)

@@ -9,12 +9,14 @@
     app/prompts/system_v*.txt   ← 판정 기준 (사람이 고치는 곳)
     PINS                        ← 그 파일이 의도치 않게 변한 것을 잡는 핀
 
-### 네 버전은 서로 다른 질문이다
+### 여섯 버전은 서로 다른 질문이다
 
     v1  "이 사진에 산책로가 보이는가"
     v2  "카메라가 산책로 위에 서 있는가"      — 너무 엄격해서 폐기
     v3  같은 질문, 폭·노면 조건을 뺀 것
-    v4  "카메라 발밑이 무엇인가" (범주)        ← 기본값
+    v4  "카메라 발밑이 무엇인가" (범주)
+    v5  "주변에 자연이 얼마나 있는가" (0~3)
+    v6  v5 + "걸을 데가 있는가" (0/1)          ← 기본값. 응답이 둘이다
 
 원래 v1 은 둘 중 무엇인지 말한 적이 없었고, 그래서 프레임 안에 길이 보이지만
 카메라는 차도 위에 있는 장면에서 판정이 갈렸다. 모델이 틀린 게 아니라
@@ -42,6 +44,51 @@ v1·v2·v3 는 느슨/엄격 한 축에서만 왕복했다. v4 는 축을 하나
 못 정하므로, 그 경계를 프롬프트 문장이 아니라 **설정**에 둔다
 (`vlm.trail_surfaces`). 경계를 옮겨도 프롬프트 버전이 안 바뀌고, 이미 받아
 둔 판정을 다시 해석할 수 있다.
+
+### v5 는 축을 바꾼다 — 노면이 아니라 자연
+
+v1~v4 는 전부 **노면**을 물었다. 카메라가 무엇 위에 있는가, 그 노면을 차와
+공유하는가. v5 는 그 축을 통째로 버리고 **주변에 자연이 얼마나 있는가**만
+0~3 으로 묻는다.
+
+이유는 v4 의 실패에 있다. 2026-08-24 약수역 반경 1km explore(판정 1,916건)
+에서 `park_path` 2건이 나왔는데 하나가 **터널 안 차도**였다 — 차선·조명·
+주행 차량이 다 찍혀 있는데 산책로로 뒤집혔다. 노면만 보면 터널 바닥과 공원
+길은 둘 다 "차선 없는 회색 면" 이라 헷갈릴 자리가 있다. 자연을 물으면 터널은
+식생이 0이라 헷갈릴 수가 없다.
+
+**대가가 있다:** v5 는 "여기로 걸어갈 수 있는가" 를 아예 안 묻는다. 차도
+한복판에서 찍어도 길 건너가 공원이면 높은 점수가 나온다. §5 가 정하고
+v2~v4 가 계속 싸운 "카메라가 그 위에 서 있는가" 규칙이 사라진다는 뜻이다.
+이건 의도된 것이다 — 판정의 뜻이 달라졌다는 것을 알고 쓸 것.
+
+등급은 사람이 정했다: 가로수만 1 · 큰 나무가 많으면 2 · 완전히 공원 같으면 3.
+0(거의 없음)은 프롬프트를 쓰면서 더했다 — 셋 다 녹지가 있다는 전제라
+콘크리트 골목이 들어갈 칸이 없었다.
+
+### v6 은 축을 하나 되살린다 — 다만 따로 묻는다
+
+v5 를 약수역 1km 로 돌린 결과(판정 1,971건)가 축 하나로는 부족하다고 말했다.
+등급 3 세 건 중 하나가 **자연이 거의 없는 콘크리트 골목**이었고, 무엇보다
+v5 는 "걸을 데가 있는가" 를 아예 안 묻는다 — 차도 한복판이어도 녹지만
+많으면 높은 점수가 나온다.
+
+v6 은 **응답을 둘로 나눈다.** `nature_level`(0~3)은 v5 와 **바이트 동일한
+문구**를 쓰고, `footway`(0/1)를 따로 묻는다. 한 필드에 두 뜻을 섞지 않는
+것이 요점이다 — 섞으면 낮은 점수가 "자연이 없다" 인지 "걸을 데가 없다"
+인지 구별할 수 없고, 그건 v1~v4 가 반복해서 밟은 함정이다.
+
+`footway` 의 근거는 셋이고 **어느 하나만 있어도 1** 이다: 물리적 분리(연석·
+볼라드·난간·완충 식재) · 보행 공간을 지정한 도색 · 그 길을 따라 걷는 사람.
+도색과 보행자를 근거로 넣은 것은 사람의 결정이다 — 처음 초안은 둘 다
+배제했었다.
+
+다만 두 군데를 좁혔다. **차량용 도색은 안 센다**(중앙선·차선·빗금·정지선).
+안 그러면 황색 중앙선 하나로 1 이 되어 이 필드가 상수가 된다. 그리고
+**횡단하는 사람은 안 센다** — 세면 사거리가 전부 1 이 된다.
+
+**터널 차로는 0 이다.** 차선을 도색 근거로 인정하지 않는 것이 그 근거이기도
+하다. v4 가 터널을 `park_path` 로 부른 오답(2026-08-24)이 여기서 걸린다.
 
 **어느 버전도 지우지 않는다.** 이전 런이 어느 기준으로 난 결과인지 알 수 있어야
 하고, 같은 구간에서 정의끼리 비교할 수 있어야 한다.
@@ -73,8 +120,10 @@ PINS = {
     "system_v2": "ad67dd1827767304752f0d31e2f415b3027bf6b219e8d921f2fe358cdadc6f81",
     "system_v3": "cf0dfb7e79dad20929bf51803e3e4c9cb18982c5c6450e92ab4c24e99855b893",
     "system_v4": "e6831068faa826a4905c74f38dea7ed43285adfd3f30051fe54dc28d71920b0d",
+    "system_v5": "9c4ae48bbcdbde607720af55cd9e22f7c5b0f91c7078afb4f517d54b553d6db2",
+    "system_v6": "b0a903f554fb8274d3ecaed932b2817ea5c03cb34e7f2e73fe2bbdecd534eb14",
 }
-DEFAULT_VERSION = "system_v4"
+DEFAULT_VERSION = "system_v6"
 
 
 class PromptDriftError(RuntimeError):
@@ -117,6 +166,10 @@ def load(version: str = DEFAULT_VERSION) -> str:
 #   eval         — v1~v3 평가용. + confidence.
 #   surface      — v4 용 탐색 루프. camera_surface 범주 하나.
 #   surface_eval — v4 평가용. + confidence.
+#   nature       — v5 용 탐색 루프. nature_level 정수 하나.
+#   nature_eval  — v5 평가용. + confidence.
+#   nature_footway      — v6 용 탐색 루프. nature_level + footway 둘.
+#   nature_footway_eval — v6 평가용. + confidence.
 #
 # confidence 를 0~10 정수로 둔 이유: 소수점 실수는 토큰을 더 먹는데
 # 임계값 스윕에 11 단계면 충분하다.
@@ -137,6 +190,22 @@ SURFACES = [
     "open_ground",     # 정의된 길 없음 — 잔디·공터·자갈
     "unclear",         # 노면을 못 봄
 ]
+
+# 자연 등급 0~3 (→ prompts/system_v5.txt). 사람이 정한 것은 1·2·3 이고
+# 0(거의 없음)은 프롬프트를 쓰며 더했다 — 1~3 이 전부 녹지가 있다는 전제라
+# 콘크리트 골목이 들어갈 칸이 없었다.
+#
+#   0 거의 없음 (화분은 자연이 아니다. 노면을 못 봐도 여기)
+#   1 가로수·산울타리 — 녹지가 가장자리 선
+#   2 큰 나무가 많다 · 양옆 녹지 · 수관이 덮는다 · 물이 흐른다
+#   3 공원·숲·물길이 프레임 대부분. 자연이 배경 그 자체
+NATURE_MIN, NATURE_MAX = 0, 3
+NATURE_SCHEMAS = frozenset({"nature", "nature_eval"})
+
+# v6 은 여기에 footway 0/1 을 더한다. 한 필드에 두 뜻을 섞지 않는 것이 요점이라
+# 등급과 별개로 둔다 — 섞으면 낮은 점수가 "자연이 없다" 인지 "걸을 데가 없다"
+# 인지 구별할 수 없다.
+NATURE_FOOTWAY_SCHEMAS = frozenset({"nature_footway", "nature_footway_eval"})
 
 SCHEMAS = {
     "walk": {
@@ -169,11 +238,53 @@ SCHEMAS = {
         "required": ["camera_surface", "confidence"],
         "additionalProperties": False,
     },
+    "nature": {
+        "type": "object",
+        "properties": {"nature_level": {"type": "integer",
+                                        "minimum": NATURE_MIN, "maximum": NATURE_MAX}},
+        "required": ["nature_level"],
+        "additionalProperties": False,
+    },
+    "nature_eval": {
+        "type": "object",
+        "properties": {
+            "nature_level": {"type": "integer",
+                             "minimum": NATURE_MIN, "maximum": NATURE_MAX},
+            "confidence": {"type": "integer", "minimum": 0, "maximum": 10},
+        },
+        "required": ["nature_level", "confidence"],
+        "additionalProperties": False,
+    },
+    "nature_footway": {
+        "type": "object",
+        "properties": {
+            "nature_level": {"type": "integer",
+                             "minimum": NATURE_MIN, "maximum": NATURE_MAX},
+            # 불리언이 아니라 0/1 정수다 — 사람이 그렇게 정했고, 등급과 같은
+            # 모양이라 JSONL 을 읽을 때 형이 섞이지 않는다
+            "footway": {"type": "integer", "minimum": 0, "maximum": 1},
+        },
+        "required": ["nature_level", "footway"],
+        "additionalProperties": False,
+    },
+    "nature_footway_eval": {
+        "type": "object",
+        "properties": {
+            "nature_level": {"type": "integer",
+                             "minimum": NATURE_MIN, "maximum": NATURE_MAX},
+            "footway": {"type": "integer", "minimum": 0, "maximum": 1},
+            "confidence": {"type": "integer", "minimum": 0, "maximum": 10},
+        },
+        "required": ["nature_level", "footway", "confidence"],
+        "additionalProperties": False,
+    },
 }
 
 # 범주를 내는 스키마. is_trail 은 이 경우 서버가 아니라 **설정**이 정한다
 # (`vlm.trail_surfaces`) — VlmClient 가 유도한다.
 SURFACE_SCHEMAS = frozenset({"surface", "surface_eval"})
+# NATURE_SCHEMAS 는 SCHEMAS 앞에 있다 — 스키마 정의가 그 상수를 읽는다
+
 
 # 프롬프트 버전 → 그 버전과 짝이 맞는 스키마.
 #
@@ -187,6 +298,8 @@ COMPATIBLE = {
     "system_v2": ("walk", "eval"),
     "system_v3": ("walk", "eval"),
     "system_v4": ("surface", "surface_eval"),
+    "system_v5": ("nature", "nature_eval"),
+    "system_v6": ("nature_footway", "nature_footway_eval"),
 }
 
 

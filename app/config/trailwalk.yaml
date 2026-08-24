@@ -149,24 +149,45 @@ geo:
 vlm:
   url: "http://127.0.0.1:8080/v1/chat/completions"
 
-  # 판정 기준. 네 버전은 네 개의 다른 질문이다 (app/prompts/).
+  # 판정 기준. 여섯 버전은 여섯 개의 다른 질문이다 (app/prompts/).
   #   v1 "이 사진에 산책로가 보이는가"      → 차도에서 True (갓길이 프레임에 보임)
   #   v2 "카메라가 산책로 위에 서 있는가"   → 폭·노면 조건이 청계천을 거부
   #   v3 v2 에서 폭·노면 조건 제거          → 골목을 전부 True 로 셌다
   #   v4 "카메라 발밑이 무엇인가" (범주)    → 차량 공유 여부를 관찰로 판별
+  #   v5 "주변에 자연이 얼마나 있는가" (0~3) → 노면을 아예 안 본다
+  #   v6 v5 + "걸을 데가 있는가" (0/1)       → 응답이 둘이다
   #
   # v3 를 왜 버렸나: 2026-08-23 약수동 500장에서 True 8건을 눈으로 봤더니
   # 8건 전부 카메라가 차도 위였다. v3 의 "정의된 길이 카메라 아래로 이어지는가"
   # 는 골목이 정확히 만족하는 조건이다 (→ trailwalk/prompt.py 독스트링).
-  prompt_version: system_v4
+  #
+  # v4 를 왜 버렸나: 2026-08-24 약수역 1km explore(판정 1,916건)에서 나온
+  # park_path 2건 중 하나가 **터널 안 차도**였다. 차선·조명·주행 차량이
+  # 다 찍혀 있는데 산책로로 뒤집혔다 — 노면만 보면 터널 바닥과 공원 길이
+  # 둘 다 "차선 없는 회색 면" 이다.
+  #
+  # v5 를 왜 버렸나: 축 하나로는 부족했다. 2026-08-24 약수역 1km(판정 1,971건)
+  # 에서 등급 3 세 건 중 하나가 **자연이 거의 없는 콘크리트 골목**이었고,
+  # 무엇보다 v5 는 "걸을 데가 있는가" 를 아예 안 묻는다 — 차도 한복판이어도
+  # 녹지만 많으면 높은 점수가 나온다.
+  #
+  # v6 은 응답을 둘로 나눈다. nature_level 은 v5 와 **바이트 동일한 문구**를
+  # 쓰고 footway 를 따로 묻는다. 한 필드에 두 뜻을 섞지 않는 것이 요점이다 —
+  # 섞으면 낮은 점수가 "자연이 없다" 인지 "걸을 데가 없다" 인지 모른다.
+  prompt_version: system_v6
 
   # 출력 스키마. decode 가 ~37ms/token 이라 **필드 하나가 곧 지연**이다.
   #   walk         = is_trail 만 (17토큰 / 620ms) — v1~v3 탐색 루프용
   #   eval         = + confidence 0~10 (26토큰) — v1~v3 ROC 용
   #   surface      = camera_surface 범주 하나 — v4 탐색 루프용
   #   surface_eval = + confidence — v4 ROC 용
-  # 프롬프트 버전과 짝이 맞아야 한다: v4 는 is_trail 을 아예 안 낸다.
-  schema: surface
+  #   nature       = nature_level 정수 하나 — v5 탐색 루프용
+  #   nature_eval  = + confidence — v5 ROC 용
+  #   nature_footway      = nature_level + footway — v6 탐색 루프용
+  #   nature_footway_eval = + confidence — v6 ROC 용
+  # 프롬프트 버전과 짝이 맞아야 한다 (prompt.COMPATIBLE 이 강제한다):
+  # v4 는 is_trail 을, v5 는 camera_surface 를 아예 안 낸다.
+  schema: nature_footway
 
   # ★ 어느 범주를 산책로로 셀 것인가. **프롬프트가 아니라 여기가 경계다.**
   # 경계를 옮겨도 프롬프트 버전이 안 바뀌므로, 이미 받아 둔 camera_surface 를
@@ -185,6 +206,31 @@ vlm:
   #
   # 쓸 수 있는 값은 trailwalk/prompt.py 의 SURFACES 가 전부다. 오타는 터진다.
   trail_surfaces: [park_path, waterside]
+
+  # ★ nature_level 이 몇 이상이면 산책로로 셀 것인가. v5 의 경계이고
+  # trail_surfaces 와 같은 역할이다 — 프롬프트가 아니라 여기 두어야 경계를
+  # 옮겨도 이미 받아 둔 nature_level 을 다시 해석하는 것만으로 A/B 가 된다.
+  #
+  # 등급(→ prompts/system_v5.txt):
+  #   0 거의 없음   1 가로수만   2 큰 나무가 많다   3 완전히 공원 같다
+  #
+  # 2 로 둔 이유: 1 은 "가로수 있는 차도" 라 서울 대로가 전부 들어온다.
+  # 3 만 세면 하천변처럼 나무가 적고 물이 많은 곳을 놓친다. **아직 라벨로
+  # 확인 안 한 가설이다** — trail_surfaces 와 같은 처지다.
+  min_nature_level: 2
+
+  # ★ footway 가 1 이어야 산책로로 셀 것인가 (v6 전용, min_nature_level 과 AND).
+  # false 로 두면 녹지 등급만 보는 v5 동작이 된다 — 이 한 줄로 "녹지만" 과
+  # "녹지 AND 인도" 를 **재판정 없이** A/B 할 수 있다. 그게 두 값을 런로그에
+  # 다 남기는 이유다.
+  #
+  # true 로 둔 이유: v5 의 실패가 "녹지는 많은데 걸을 데가 없는 곳"(차도·
+  # 터널)을 못 걸러낸 것이었다. **아직 라벨로 확인 안 한 가설이다.**
+  #
+  # ⚠️ 이 값이 실제로 무엇을 거르는지는 돌려 봐야 안다. footway 의 근거에
+  # 도색과 보행자가 들어가 있어서(→ prompts/system_v6.txt), 서울 골목에서는
+  # 1 이 흔할 수 있다. 그러면 AND 가 사실상 아무것도 안 거른다.
+  require_footway: true
 
   # 출력 상한. walk 스키마 실측 17토큰의 3배 이상 여유다
   max_tokens: 60

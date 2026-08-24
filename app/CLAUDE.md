@@ -20,7 +20,7 @@ app/
   check_pano_census.py   # 진단 — 반경 안 pano 를 계열별로 전수 조사 (캡처 불필요)
 
   config/trailwalk.yaml  # ★ 기본값의 유일한 정본. 값마다 근거 주석
-  prompts/system_v*.txt  # ★ 판정 기준의 유일한 진실. 바이트 고정 (v1·v2 도 보존)
+  prompts/system_v*.txt  # ★ 판정 기준의 유일한 진실. 바이트 고정 (v1~v5 도 보존)
   .env / .env.example    # 비밀값. gitignore + 훅으로 읽기 차단
 
   trailwalk/             # 라이브러리 — 여기만 app 밖에서 import 될 수 있다

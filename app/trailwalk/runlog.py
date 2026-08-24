@@ -77,6 +77,12 @@ class RunLog:
             # None 이면 필드 자체가 없어 v1~v3 런로그와 바이트가 같다.
             **({"camera_surface": verdict.camera_surface}
                if verdict.camera_surface else {}),
+            # v5. is_trail 은 min_nature_level 로 유도된 값이라 원본이 없으면
+            # 임계를 옮겼을 때 옛 런을 다시 해석할 수 없다 (camera_surface 와 같다)
+            **({"nature_level": verdict.nature_level}
+               if verdict.nature_level is not None else {}),
+            **({"footway": verdict.footway}
+               if verdict.footway is not None else {}),
             "prompt_tokens": verdict.prompt_tokens,
             "cached_tokens": verdict.cached_tokens,
             "completion_tokens": verdict.completion_tokens,

@@ -55,6 +55,11 @@ class Verdict:
     # is_trail 은 이 값에서 유도된 것이라 **경계를 옮기면 뜻이 달라진다** —
     # 원본 범주를 같이 남겨야 나중에 다시 해석할 수 있다.
     camera_surface: str | None = None
+    # v5(자연 스키마)에서만 채워진다. camera_surface 와 같은 이유로 남긴다 —
+    # is_trail 은 임계값으로 유도된 것이라 경계를 옮기면 뜻이 달라진다.
+    nature_level: int | None = None
+    # v6 에서만 채워진다. 0/1 이다 (불리언이 아니다 — 스키마가 정수다).
+    footway: int | None = None
     raw: dict = field(repr=False, default_factory=dict)
 
 
@@ -110,7 +115,18 @@ class VlmClient:
         # 범주형 스키마면 is_trail 을 서버가 아니라 여기서 만든다.
         # 판정할 때마다 스키마 이름을 다시 보지 않고 한 번에 정해 둔다.
         self.by_surface = schema_name in P.SURFACE_SCHEMAS
+        self.by_nature = schema_name in P.NATURE_SCHEMAS
+        self.by_nature_footway = schema_name in P.NATURE_FOOTWAY_SCHEMAS
+        self.require_footway = s.vlm.require_footway
         self.trail_surfaces = frozenset(s.vlm.trail_surfaces)
+        self.min_nature_level = s.vlm.min_nature_level
+        # 임계가 범위 밖이면 전부 True 이거나 전부 False 인 런이 조용히 돈다.
+        # trail_surfaces 오타를 막는 것과 같은 이유다
+        if not P.NATURE_MIN <= self.min_nature_level <= P.NATURE_MAX:
+            raise ValueError(
+                f"vlm.min_nature_level 이 범위 밖이다 ({self.min_nature_level}). "
+                f"{P.NATURE_MIN}~{P.NATURE_MAX} 여야 한다.\n"
+                f"  밖이면 판정이 전부 True 이거나 전부 False 로 조용히 굳는다.")
         # 오타를 여기서 터뜨린다. 안 막으면 `park_paths` 하나가 그 범주를
         # 통째로 False 로 만들고, 에러는 안 나며, 리포트에서는 모델이 못
         # 맞힌 것처럼 보인다 — 이 레포가 막으려는 바로 그 실패 방식이다.
@@ -257,10 +273,24 @@ class VlmClient:
         # (→ docs/10-client-guide.md §4.1). 범주도 같다 — enum 을 서버가
         # 강제하므로 SURFACES 밖의 값은 올 수 없다.
         surface = obj["camera_surface"] if self.by_surface else None
+        by_nature = self.by_nature or self.by_nature_footway
+        nature = obj["nature_level"] if by_nature else None
+        footway = obj["footway"] if self.by_nature_footway else None
+        if self.by_surface:
+            is_trail = surface in self.trail_surfaces
+        elif by_nature:
+            # 녹지 임계 AND 인도. require_footway 를 끄면 v5 와 같아진다 —
+            # 두 손잡이가 다 설정에 있어야 재판정 없이 A/B 가 된다
+            is_trail = nature >= self.min_nature_level
+            if self.by_nature_footway and self.require_footway:
+                is_trail = is_trail and footway == 1
+        else:
+            is_trail = bool(obj["is_trail"])
         return Verdict(
-            is_trail=(surface in self.trail_surfaces if self.by_surface
-                      else bool(obj["is_trail"])),
+            is_trail=is_trail,
             camera_surface=surface,
+            nature_level=nature,
+            footway=footway,
             confidence=obj.get("confidence"),
             prompt_tokens=pt,
             cached_tokens=cached,

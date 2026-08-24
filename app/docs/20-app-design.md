@@ -36,8 +36,8 @@
 이 문서가 계속 가리키는 것 셋만 적어 둔다:
 
 - `app/config/trailwalk.yaml` — ★ 기본값의 유일한 정본. 값마다 근거 주석
-- `app/prompts/system_v4.txt` — ★ 판정 기준의 유일한 진실. 바이트 고정
-  (v1~v3 도 보존한다. 어느 기준으로 난 런인지 알 수 있어야 한다)
+- `app/prompts/system_v6.txt` — ★ 판정 기준의 유일한 진실. 바이트 고정
+  (v1~v5 도 보존한다. 어느 기준으로 난 런인지 알 수 있어야 한다)
 - `app/trailwalk/imaging.py` — ★ 서버로 나가는 모든 바이트가 지나는 단일 출구
 
 ---
@@ -62,7 +62,7 @@
                     │  건너뛰면 캡처·판정만 빠지고 아래 확장은 그대로
                     ▼
       후보마다:  capture → view_to_data_uri → vlm.assess (1턴)
-                    │       JPEG 강제 · 16:9 · 1280×720   camera_surface 하나
+                    │       JPEG 강제 · 16:9 · 1280×720   녹지 등급 + 인도
                     ▼
         판정과 무관하게 **전부** 큐에 넣는다 (아래 "아님 판정도 확장한다")
                     │
@@ -296,6 +296,10 @@ decode 는 ~37 ms/token 이고 출력 토큰 수에만 비례한다. 그래서 �
 | `eval` | `+ confidence` (0~10 정수) | **26** | v1~v3 | 평가. 임계값을 움직여 ROC |
 | `surface` | `camera_surface` | **15** | v4 | 탐색 루프 |
 | `surface_eval` | `+ confidence` | — | v4 | 평가 |
+| `nature` | `nature_level` (0~3) | — | v5 | 탐색 루프 |
+| `nature_eval` | `+ confidence` | — | v5 | 평가 |
+| `nature_footway` | `+ footway` (0/1) | — | v6 | 탐색 루프 |
+| `nature_footway_eval` | `+ confidence` | — | v6 | 평가 |
 
 `confidence` 를 소수 실수가 아니라 0~10 정수로 둔 이유: 임계값 스윕에 11단계면
 충분한데 소수점은 토큰을 더 먹는다. 자유 텍스트 `reason` 은 넣지 않는다 —
@@ -307,17 +311,24 @@ decode 는 ~37 ms/token 이고 출력 토큰 수에만 비례한다. 그래서 �
 strict json_schema 가 형식은 맞춰 주므로 HTTP 200 에 파싱까지 성공한다 —
 아래 "정의하지 않은 필드" 사고와 같은 모양이다.
 
-### v4 의 `is_trail` 은 서버가 아니라 설정이 만든다
+### v4 부터 `is_trail` 은 서버가 아니라 설정이 만든다
 
-`surface` 스키마는 `camera_surface` 범주 하나만 낸다. `is_trail` 은
-`VlmClient` 가 `vlm.trail_surfaces` 로 유도한다. 경계(보행자우선 골목을
+v4 이후 스키마는 `is_trail` 을 아예 내지 않는다. `VlmClient` 가 유도한다:
+
+| 프롬프트 | 서버가 내는 것 | `is_trail` 을 만드는 설정 |
+|---|---|---|
+| v1~v3 | `is_trail` 그대로 | (없음) |
+| v4 | `camera_surface` | `vlm.trail_surfaces` |
+| v5 | `nature_level` | `vlm.min_nature_level` |
+| v6 | `nature_level` + `footway` | `min_nature_level` **AND** `require_footway` | 경계(보행자우선 골목을
 산책로로 셀 것인가)는 라벨 없이 못 정하는데, 프롬프트 문장에 새기면 경계를
 옮길 때마다 새 프롬프트 버전이 되고 **이미 받아 둔 판정을 못 쓴다.**
 설정에 두면 같은 `camera_surface` 를 다시 해석하는 것만으로 A/B 가 된다
 (→ `23-open-questions.md` §5).
 
-그래서 런로그가 `is_trail` 과 `camera_surface` 를 **둘 다** 남긴다.
-유도된 값만 남기면 경계를 옮긴 순간 옛 런이 무의미해진다.
+그래서 런로그가 `is_trail` 과 **원본 값을 다** 남긴다 (`camera_surface` ·
+`nature_level` · `footway`). 유도된 값만 남기면 경계를 옮긴 순간 옛 런이
+무의미해진다 — 2,000건짜리 런을 다시 받아야 한다.
 
 ### ⚠️ 정의하지 않은 필드는 쓰레기를 낸다
 
