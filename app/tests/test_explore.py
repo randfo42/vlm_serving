@@ -46,7 +46,9 @@ def run(provider, verdicts, bearing=0.0, client=None, **cfg):
     client = client or Client(provider, verdicts)
     base = ExploreConfig.from_settings(settings.SETTINGS)
     cfg.setdefault("skip_steps", 0)
-    return explore(provider, client, (37.5, 127.0), bearing, replace(base, **cfg))
+    cancel = cfg.pop("cancel", None)
+    return explore(provider, client, (37.5, 127.0), bearing, replace(base, **cfg),
+                   cancel=cancel)
 
 
 # ── 시작 노드 ───────────────────────────────────────────────────────────────
@@ -449,3 +451,55 @@ def test_이미지_무시는_터지지_않고_반환된다():
     res = run(p, {}, client=Ignoring(p, {}))
     assert res.stop_reason == "image_ignored"
     assert [w["code"] for w in res.warnings] == ["image_ignored"]
+
+
+# ── 취소와 origin (웹 경계층이 쓴다 → docs/23 §9) ───────────────────────────
+
+def test_취소하면_canceled로_정상_종료하고_갈래를_남긴다():
+    """취소는 실패가 아니다 — 부분 결과는 유효하고, 못 간 갈래는 frontier 에
+    남아야 한다 (예산 종료와 같은 대접)."""
+    chain = {"S": [nb("A", 0.0)], "A": [nb("S", 180.0), nb("B", 0.0)],
+             "B": [nb("A", 180.0), nb("C", 0.0)], "C": [nb("B", 180.0)]}
+    calls = 0
+
+    def cancel():
+        nonlocal calls
+        calls += 1
+        return calls > 2          # 몇 번은 돌게 두고 멈춘다
+
+    res = run(Provider(chain), dict.fromkeys(
+        [("S", 0.0), ("A", 0.0), ("B", 0.0)], True), cancel=cancel)
+    assert res.stop_reason == "canceled"
+    assert res.frontier, "못 간 갈래가 버려졌다"
+    assert all(f["reason"] == "canceled" for f in res.frontier)
+
+
+def test_cancel이_거짓이면_결과가_기존과_동일하다():
+    """cancel=None 과 cancel=항상거짓 이 같은 nodes/probes 를 내야 한다 —
+    인자 추가가 기존 런의 동작을 못 바꾼다는 회귀 방어."""
+    graph = {"S": [nb("A", 90.0), nb("B", 270.0)],
+             "A": [nb("S", 270.0)], "B": [nb("S", 90.0)]}
+    verdicts = {("S", 90.0): True, ("S", 270.0): False}
+    r1 = run(Provider(graph), dict(verdicts))
+    r2 = run(Provider(graph), dict(verdicts), cancel=lambda: False)
+    assert r1.nodes == r2.nodes and r1.probes == r2.probes
+    assert r1.stop_reason == r2.stop_reason == "exhausted"
+
+
+def test_origin은_스냅된_pano_좌표다():
+    """예산이 즉시 끊겨 nodes 가 비어도 지도는 원점을 그린다 — 경계가 이 값을
+    필요로 한다. 요청 좌표가 아니라 **스냅된 pano** 여야 거리 예산과 기준이 같다."""
+    p = Provider({"S": [nb("A", 0.0)], "A": [nb("S", 180.0)]})
+    res = run(p, {("S", 0.0): True})
+    assert res.origin == (p.start.lat, p.start.lng)
+    assert res.origin_pano == "S"
+
+
+def test_스냅_전에_끝난_런의_origin은_None이다():
+    """no_coverage 는 스냅 자체가 실패한 것이다. None 이 정확한 정보고,
+    호출자가 요청 좌표를 대신 쓴다."""
+    p = Provider({})
+    p.nearest = lambda *a, **k: None
+    res = run(p, {})
+    assert res.stop_reason == "no_coverage"
+    assert res.origin is None and res.origin_pano is None

@@ -100,6 +100,7 @@ from __future__ import annotations
 
 import time
 from collections import deque
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 
@@ -166,7 +167,8 @@ class ExploreResult:
     probes: list[dict] = field(default_factory=list)   # from_pano, heading, to_pano, is_trail
     # 예산(거리/시간)이나 이웃 로드 실패로 못 간 갈래. 이어서 탐색할 때의 입력
     frontier: list[dict] = field(default_factory=list)  # from_pano, pano_id, 좌표, depth, reason
-    stop_reason: str = ""          # exhausted = 갈 곳을 다 갔다. 나머지는 예산/오류
+    stop_reason: str = ""    # exhausted = 갈 곳을 다 갔다. canceled = 사람이 멈췄다.
+    #                          나머지는 예산/오류
     # 런 도중 사람이 알아야 할 일 (→ trailwalk/warn.py). stop_reason 과 역할이
     # 다르다: 저쪽은 "완결된 결과인가", 이쪽은 "믿어도 되나 · 뭐라고 말하나".
     # log=None 으로 도는 호출(테스트·인프로세스 웹)에서 유일한 창구이기도 하다
@@ -176,6 +178,12 @@ class ExploreResult:
     # 그래프에는 들어 있다 — nodes[].skipped 가 어느 것인지 말해준다
     skipped: int = 0
     wall_s: float = 0.0
+    # 스냅된 시작점. 예산이 즉시 끊겨 nodes 가 비어도 지도는 원점을 그려야
+    # 하므로 경계가 이 값을 필요로 한다 (→ docs/23-open-questions.md §9).
+    # 스냅 전에 끝난 런(no_coverage·provider_error)은 None — 그것도 정확한
+    # 정보다. 호출자가 요청 좌표를 대신 쓴다
+    origin: tuple[float, float] | None = None
+    origin_pano: str | None = None
 
 
 def _candidates(provider, pano: Pano, bearing: float, came_from: str | None,
@@ -297,13 +305,30 @@ class _Node:
 
 
 def explore(provider, client, start: tuple[float, float], start_bearing: float = 0.0,
-            cfg: ExploreConfig | None = None, log=None) -> ExploreResult:
-    """start 에서 모든 방향으로 산책로 그래프를 넓힌다."""
+            cfg: ExploreConfig | None = None, log=None,
+            cancel: Callable[[], bool] | None = None) -> ExploreResult:
+    """start 에서 모든 방향으로 산책로 그래프를 넓힌다.
+
+    `cancel` 이 참을 돌려주면 `stop_reason="canceled"` 로 **정상 종료**한다 —
+    부분 결과는 유효하고, 못 간 갈래는 frontier 에 남는다. 확인 시점은 예산
+    검사와 같은 두 곳뿐이라, 취소 지연은 최대 max_inflight × VLM 지연이다
+    (in-flight 판정은 이미 값을 치렀으므로 받아서 기록한다 — pump 안에서
+    끊으면 FIFO 불변식이 깨진다).
+    """
     # 기본 인자로 ExploreConfig(...) 를 두면 인스턴스 하나가 호출 간에 공유된다
     cfg = cfg or ExploreConfig.from_settings(settings.SETTINGS)
     res = ExploreResult()
     t0 = time.time()
     tallies: dict[str, dict] = {}
+
+    def budget_stop() -> str | None:
+        """멈출 이유, 없으면 None. 취소를 먼저 본다 — 예산이 남았어도
+        사람이 그만두라고 했다. 둘 다 frontier 를 남기는 정상 종료다."""
+        if cancel is not None and cancel():
+            return "canceled"
+        if time.time() - t0 > cfg.max_seconds:
+            return "time_budget"
+        return None
 
     # 워커 수 = max_inflight. **줄을 세우는 것은 서버의 일이다** — 여기서
     # 워커를 조이면 큐가 vLLM 이 아니라 이 스레드풀로 옮겨올 뿐이고, 그건
@@ -465,6 +490,8 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
 
     # 거리 예산의 기준점. 요청 좌표가 아니라 **스냅된 pano** 다 (→ yaml 주석)
     origin = (start_pano.lat, start_pano.lng)
+    res.origin = origin
+    res.origin_pano = start_pano.pano_id
 
     # 큐는 하나. 발견 순서대로 FIFO 라 소비 순서가 곧 depth 순서다
     q: deque[_Node] = deque(
@@ -479,8 +506,8 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
     node_slots: list[tuple[dict, _Pending | None]] = []
 
     while q:
-        if time.time() - t0 > cfg.max_seconds:
-            res.stop_reason = "time_budget"
+        if stop := budget_stop():
+            res.stop_reason = stop
             res.frontier += drain()
             break
 
@@ -545,9 +572,9 @@ def explore(provider, client, start: tuple[float, float], start_bearing: float =
         for i, (hdg, nb) in enumerate(cands):
             # 시간은 노드 경계가 아니라 **후보마다** 본다. 한 노드의 후보가
             # 최대 max_candidates 개라, 노드 경계에서만 보면 캡처가 느릴 때
-            # 그 노드 하나가 통째로 예산을 넘겨 실행된다.
-            if time.time() - t0 > cfg.max_seconds:
-                res.stop_reason = "time_budget"
+            # 그 노드 하나가 통째로 예산을 넘겨 실행된다. 취소도 같은 자리다.
+            if stop := budget_stop():
+                res.stop_reason = stop
                 res.frontier += unwalked(node, cands[i:], res.stop_reason)
                 budget_hit = True
                 break
