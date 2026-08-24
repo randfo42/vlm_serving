@@ -113,7 +113,8 @@ CREATE TABLE frontier (
   frontier_id INTEGER PRIMARY KEY,
   run_id    INTEGER NOT NULL REFERENCES run(run_id) ON DELETE CASCADE,
   from_pano TEXT,
-  pano_id   TEXT NOT NULL,
+  pano_id   TEXT NOT NULL,   -- pano FK 를 안 건다 — 안 가 본 지점이라 pano 행이 없다
+  lat       REAL, lng REAL,  -- 그래서 좌표를 여기 직접 든다 (이어탐색·지도 표시용)
   depth     INTEGER NOT NULL,
   reason    TEXT NOT NULL
 );
@@ -305,6 +306,36 @@ def insert_event(conn: sqlite3.Connection, *, run_id: int, kind: str,
     conn.execute(
         "INSERT INTO event (run_id, kind, payload_json, created_at) VALUES (?, ?, ?, ?)",
         (run_id, kind, json.dumps(payload, ensure_ascii=False), created_at))
+
+
+def write_result(conn: sqlite3.Connection, run_id: int, res) -> None:
+    """ExploreResult 의 그래프(nodes/frontier)와 원점을 싣는다.
+
+    판정(probe)은 RunWriter 가 실시간으로 썼다 — 그래프는 런이 끝나야
+    완성되는 것이라 여기서 한 번에 넣는다. 경계층(runner)이 부른다.
+    """
+    now = _now()
+    for n in res.nodes:
+        upsert_pano(conn, n["pano_id"], n["lat"], n["lng"], now=now)
+        conn.execute(
+            "INSERT INTO node (run_id, pano_id, depth, parent_pano, is_trail, skipped) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (run_id, n["pano_id"], n["depth"], n["parent"],
+             None if n["is_trail"] is None else int(n["is_trail"]),
+             int(n.get("skipped", False))))
+    for f in res.frontier:
+        conn.execute(
+            "INSERT INTO frontier (run_id, from_pano, pano_id, lat, lng, depth, reason) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (run_id, f.get("from_pano"), f["pano_id"], f.get("lat"), f.get("lng"),
+             f["depth"], f["reason"]))
+    if res.origin_pano and res.origin:
+        # 즉시 취소/예산 소진이면 nodes 가 비어 원점 pano 행이 아직 없다 —
+        # run.origin_pano 가 pano 를 참조하므로 먼저 만들어 준다
+        upsert_pano(conn, res.origin_pano, res.origin[0], res.origin[1], now=now)
+        conn.execute("UPDATE run SET origin_pano = ? WHERE run_id = ?",
+                     (res.origin_pano, run_id))
+    conn.commit()
 
 
 def finish_run(conn: sqlite3.Connection, run_id: int, *, wall_s: float,

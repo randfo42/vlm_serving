@@ -419,3 +419,21 @@ eval:
   # 서버가 죽어도(Metal OOM) 재시작 후 같은 명령이 곧 재개다.
   # 재개는 기존 파일의 prompt/labels 지문이 현재 설정과 같을 때만 허용된다.
   resume: true
+
+web:
+  # 로컬 전용이다. 루프백 밖에 바인드하면 수집한 pano 좌표가 LAN 에 노출된다 —
+  # 이 저장소가 public 인 것과 같은 이유로 막는다. 배포로 범위를 넓히려면
+  # 약관(docs/23 §2)부터 다시 봐야 한다.
+  #
+  # ⚠️ 접속 주소는 바인드 주소가 아니라 Kakao 개발자 콘솔에 **등록된 도메인**
+  # 쪽을 쓴다 (localhost 등록이면 http://localhost:<port>). Kakao 는
+  # localhost 와 127.0.0.1 을 다른 도메인으로 본다 — 지도가 안 뜨는 첫 원인.
+  host: 127.0.0.1
+
+  # vLLM(8000)·Prometheus(9090) 등 이 프로젝트 주변에서 이미 쓰는 포트와
+  # 안 겹치는 값. 정한 근거는 그것뿐이다.
+  port: 8321
+
+  # 판정 정본(SQLite). app/ 기준 상대경로. app/runs/ 아래라 .gitignore 의
+  # app/runs/*.db* 가 커밋을 막는다 — pano 좌표와 vlm.url(LAN IP)이 든다.
+  db: runs/trailwalk.db
