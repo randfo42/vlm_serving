@@ -80,7 +80,8 @@ class RunOutcome:
 
 
 def run_explore(req: RunRequest, *, db: Path | str, name: str | None = None,
-                cancel: Callable[[], bool] | None = None) -> RunOutcome:
+                cancel: Callable[[], bool] | None = None,
+                job_id: int | None = None) -> RunOutcome:
     """탐색 1건. 배선 → explore → 기록 → 정리까지 전부.
 
     배선 단계에서 실패하면(설정·프롬프트·provider 생성) 런이 서지 않은
@@ -158,7 +159,7 @@ def run_explore(req: RunRequest, *, db: Path | str, name: str | None = None,
         stack.callback(lambda: _safe_close(prov, writer))
         try:
             writer = store.RunWriter(
-                conn, header, name=run_name,
+                conn, header, name=run_name, job_id=job_id,
                 image_dir=(APP / "runs" / "images" / run_name)
                 if st.run.save_images else None)
         except sqlite3.IntegrityError:

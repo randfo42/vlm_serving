@@ -179,6 +179,8 @@ class WebSettings:
     host: str
     port: int
     db: str
+    worker_poll_s: float
+    worker_lease_s: float
 
 
 @dataclass(frozen=True)

@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from . import warn as warn_mod
@@ -365,7 +365,8 @@ class RunWriter:
     """
 
     def __init__(self, conn: sqlite3.Connection, header: dict, *, name: str,
-                 image_dir: Path | None = None, source: str = "live"):
+                 image_dir: Path | None = None, source: str = "live",
+                 job_id: int | None = None):
         self.conn = conn
         self.image_dir = Path(image_dir) if image_dir else None
         if self.image_dir:
@@ -373,6 +374,10 @@ class RunWriter:
         self._n = 0
         self._t0 = time.time()
         self._tallies: dict[str, dict] = {}
+        # 잡에서 돌면 probe 마다 진행률을 **같은 트랜잭션**에서 갱신한다 —
+        # 진행률 배선이 explore() 를 안 지나가고, "판정은 남았는데 진행이
+        # 안 맞는" 상태도 없다
+        self.job_id = job_id
         self._finished = False
 
         prompt = header.get("prompt") or {}
@@ -426,6 +431,10 @@ class RunWriter:
             latency_ms=round(verdict.latency_ms, 1), src_format=src_format,
             image_path=image_path, sample_id=sample_id, label=label,
             created_at=_now())
+        if self.job_id is not None:
+            set_job_progress(self.conn, self.job_id,
+                             {"verdicts": self._n,
+                              "elapsed_s": round(time.time() - self._t0, 1)})
         self.conn.commit()   # 판정 1건 = 커밋 1번. 중간에 죽어도 거기까지는 남는다
 
     def event(self, kind: str, **kw) -> None:
@@ -698,3 +707,107 @@ def restore_label(conn: sqlite3.Connection, rec: dict) -> str:
               note=rec.get("note"), heading=rec.get("heading"),
               author=rec.get("author", "restore"), updated_at=rec["updated_at"])
     return "restored"
+
+
+# ── 잡 큐 — 웹이 넣고 워커 데몬이 집는다 ────────────────────────────────────
+
+def enqueue_job(conn: sqlite3.Connection, *, start_lat: float, start_lng: float,
+                bearing: float, radius_m: float, max_seconds: float,
+                config_path: str | None = None) -> dict:
+    jid = conn.execute(
+        "INSERT INTO job (state, start_lat, start_lng, bearing, radius_m,"
+        " max_seconds, config_path, created_at) "
+        "VALUES ('queued', ?, ?, ?, ?, ?, ?, ?)",
+        (start_lat, start_lng, bearing, radius_m, max_seconds,
+         config_path, _now())).lastrowid
+    conn.commit()
+    return job_row(conn, jid)
+
+
+def claim_job(conn: sqlite3.Connection, worker_id: str) -> dict | None:
+    """queued 하나를 원자적으로 집는다.
+
+    단일 UPDATE 라 두 워커가 동시에 불러도 하나만 행을 얻는다. 데몬이
+    하나라는 운영 전제를 믿지 않는 이유는 **재시작 중첩**이다 — 옛
+    프로세스가 안 죽은 채 새것이 뜨는 일이 실제로 흔하다.
+    """
+    now = _now()
+    row = conn.execute(
+        "UPDATE job SET state = 'claimed', worker_id = ?, claimed_at = ?,"
+        " heartbeat_at = ? "
+        "WHERE job_id = (SELECT job_id FROM job WHERE state = 'queued'"
+        "                ORDER BY job_id LIMIT 1) "
+        "  AND state = 'queued' RETURNING *", (worker_id, now, now)).fetchone()
+    conn.commit()
+    return dict(row) if row else None
+
+
+def job_row(conn: sqlite3.Connection, job_id: int) -> dict | None:
+    r = conn.execute("SELECT * FROM job WHERE job_id = ?", (job_id,)).fetchone()
+    return dict(r) if r else None
+
+
+def jobs_list(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
+    return [dict(r) for r in conn.execute(
+        "SELECT * FROM job ORDER BY job_id DESC LIMIT ?", (limit,))]
+
+
+def heartbeat_job(conn: sqlite3.Connection, job_id: int,
+                  state: str | None = None) -> None:
+    if state:
+        conn.execute("UPDATE job SET heartbeat_at = ?, state = ? WHERE job_id = ?",
+                     (_now(), state, job_id))
+    else:
+        conn.execute("UPDATE job SET heartbeat_at = ? WHERE job_id = ?",
+                     (_now(), job_id))
+    conn.commit()
+
+
+def set_job_progress(conn: sqlite3.Connection, job_id: int, progress: dict) -> None:
+    conn.execute("UPDATE job SET progress_json = ? WHERE job_id = ?",
+                 (json.dumps(progress, ensure_ascii=False), job_id))
+    # 커밋은 호출자(RunWriter.probe 의 트랜잭션)가 한다 — 판정과 진행이
+    # 같은 커밋 경계 안에 있어야 "판정은 남았는데 진행이 안 맞는" 상태가 없다
+
+
+def request_cancel(conn: sqlite3.Connection, job_id: int) -> dict | None:
+    """queued 면 즉시 canceled, 실행 중이면 cancel_requested 만 세운다 —
+    실제 중단은 워커가 다음 후보 경계에서 한다 (explore 의 cancel 콜백)."""
+    conn.execute("UPDATE job SET state = 'canceled', finished_at = ? "
+                 "WHERE job_id = ? AND state = 'queued'", (_now(), job_id))
+    conn.execute("UPDATE job SET cancel_requested = 1 "
+                 "WHERE job_id = ? AND state IN ('claimed', 'running')", (job_id,))
+    conn.commit()
+    return job_row(conn, job_id)
+
+
+def cancel_requested(conn: sqlite3.Connection, job_id: int) -> bool:
+    r = conn.execute("SELECT cancel_requested FROM job WHERE job_id = ?",
+                     (job_id,)).fetchone()
+    return bool(r and r["cancel_requested"])
+
+
+def finish_job(conn: sqlite3.Connection, job_id: int, *, state: str,
+               run_id: int | None = None, stop_reason: str | None = None,
+               error: str | None = None) -> None:
+    conn.execute(
+        "UPDATE job SET state = ?, run_id = ?, stop_reason = ?, error = ?,"
+        " finished_at = ? WHERE job_id = ?",
+        (state, run_id, stop_reason, error, _now(), job_id))
+    conn.commit()
+
+
+def reap_stale_jobs(conn: sqlite3.Connection, lease_s: float) -> int:
+    """하트비트가 lease 를 넘긴 잡을 failed 로 접는다. **자동 재큐잉은 안
+    한다** — 6시간짜리가 절반에서 조용히 다시 시작되면 판정이 두 벌 쌓이고
+    사용자는 왜 두 배 걸렸는지 모른다. 이미 기록된 판정은 그대로 유효하다
+    (판정 불변). 사람이 "다시" 를 누르면 새 잡·새 런이다.
+    """
+    cutoff = (datetime.now(UTC) - timedelta(seconds=lease_s)
+              ).isoformat(timespec="seconds")
+    cur = conn.execute(
+        "UPDATE job SET state = 'failed', error = 'worker_lost', finished_at = ? "
+        "WHERE state IN ('claimed', 'running') AND heartbeat_at < ?",
+        (_now(), cutoff))
+    conn.commit()
+    return cur.rowcount
