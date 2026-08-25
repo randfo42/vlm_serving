@@ -181,6 +181,7 @@ class WebSettings:
     db: str
     worker_poll_s: float
     worker_lease_s: float
+    job_config: str | None
 
 
 @dataclass(frozen=True)

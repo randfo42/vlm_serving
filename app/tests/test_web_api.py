@@ -258,3 +258,16 @@ def test_잡_좌표_검증(client):
                                        "radius_m": 500})
     assert r.status_code == 422
     assert "위경도" in r.json()["detail"]
+
+
+def test_잡의_config_기본값은_web_job_config다(client):
+    # 정본의 provider 가 fixture(오프라인 우선)라, 이 기본값 없이는 웹의
+    # "여기서 탐색" 이 합성 격자를 돌고 가짜 점이 지도에 섞인다 — 실측했다
+    r = client.post("/api/jobs", json={"lat": 37.55, "lng": 127.0,
+                                       "radius_m": 200})
+    assert r.json()["config_path"].endswith("config/web-explore.yaml")
+    # 명시하면 그것이 이긴다
+    r = client.post("/api/jobs", json={"lat": 37.55, "lng": 127.0,
+                                       "radius_m": 200,
+                                       "config_path": "/x/mine.yaml"})
+    assert r.json()["config_path"] == "/x/mine.yaml"

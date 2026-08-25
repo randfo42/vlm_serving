@@ -201,11 +201,15 @@ def create_app(st: settings_mod.Settings, db: Path) -> FastAPI:
             raise HTTPException(422, "좌표가 한반도 밖이다 — 위경도 순서를 확인")
         if not (0 < body.radius_m <= 10000):
             raise HTTPException(422, "반경은 0~10km 사이여야 한다")
+        # config 미지정이면 web.job_config — 정본의 provider 가 fixture 라,
+        # 이 기본값 없이는 웹의 "여기서 탐색" 이 합성 격자를 돌게 된다
+        cfg_path = body.config_path or (
+            str(APP_DIR / st.web.job_config) if st.web.job_config else None)
         return store.enqueue_job(
             conn, start_lat=body.lat, start_lng=body.lng, bearing=body.bearing,
             radius_m=body.radius_m,
             max_seconds=body.max_seconds or st.budget.max_seconds,
-            config_path=body.config_path)
+            config_path=cfg_path)
 
     @app.get("/api/jobs")
     def api_jobs(limit: int = Query(50, ge=1, le=500), conn=Depends(get_conn)):
