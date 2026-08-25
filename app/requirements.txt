@@ -27,3 +27,11 @@ numpy>=2.0
 # 설정은 루트 pyproject.toml 에 있다. → docs/12-harness.md
 pytest>=8
 ruff>=0.7
+
+# 웹 UI(app/run_web.py) 전용. 표준 라이브러리 http.server 로도 라우트 몇 개는
+# 되지만, 뷰포트 쿼리(bbox float 4개 + 필터)의 검증을 직접 짜면 잘못된 입력이
+# 400 이 아니라 500 으로 새기 쉽다 — 이 레포가 제일 경계하는 조용한 실패라
+# 검증을 프레임워크에 맡긴다 (틀린 필드를 422 로 짚어 준다). yaml 파서를
+# 직접 안 짜는 것과 같은 결이다.
+fastapi>=0.115
+uvicorn>=0.30

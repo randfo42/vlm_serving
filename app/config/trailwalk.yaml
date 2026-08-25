@@ -442,3 +442,20 @@ web:
   # 판정 정본(SQLite). app/ 기준 상대경로. app/runs/ 아래라 .gitignore 의
   # app/runs/*.db* 가 커밋을 막는다 — pano 좌표와 vlm.url(LAN IP)이 든다.
   db: runs/trailwalk.db
+
+  # 워커 데몬(run_worker.py)이 큐를 확인하는 간격(초). 잡은 몇 분~몇 시간
+  # 단위라 2초면 사람이 기다리는 척도에서 즉시다.
+  worker_poll_s: 2.0
+
+  # 하트비트가 이만큼 끊기면 죽은 워커로 보고 잡을 failed 로 접는다(초).
+  # 캡처 1건 최악이 ~6.4초(budget 주석)라 그 ~30배 여유다. 주의:
+  # budget.max_seconds 는 스레드가 멎은 Playwright 호출을 못 끊는다 —
+  # 그 상태를 잡는 것이 이 lease 다. 자동 재큐잉은 안 한다: 6시간짜리가
+  # 절반에서 조용히 다시 시작되면 판정이 두 벌 쌓인다. 다시는 사람이 누른다.
+  worker_lease_s: 180.0
+
+  # 웹에서 넣는 잡이 쓸 설정 파일 (app/ 기준 상대경로. null = 정본 그대로).
+  # 정본의 provider 가 fixture(오프라인 우선)라, 이걸 안 갈라두면 웹의
+  # "여기서 탐색" 이 합성 격자를 돌고 가짜 점이 지도에 섞인다 — 실측했다
+  # (2026-08-25, fixture 판정 193개가 청계천 좌표에 얹혔다. 지웠다).
+  job_config: config/web-explore.yaml

@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from . import warn as warn_mod
@@ -188,16 +188,24 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
-def connect(path: Path | str, *, read_only: bool = False) -> sqlite3.Connection:
+def connect(path: Path | str, *, read_only: bool = False,
+            cross_thread: bool = False) -> sqlite3.Connection:
     """PRAGMA 까지 적용된 커넥션. 닫는 것은 호출자 몫이다.
 
     웹은 요청마다 열고 닫는다 — 리더가 커넥션을 오래 잡으면 스냅샷 때문에
     WAL 체크포인트가 못 돌아, 6시간 런 동안 WAL 파일이 계속 자란다.
+
+    cross_thread: FastAPI 는 sync 의존성의 생성과 정리(close)를 서로 다른
+    threadpool 스레드에서 돌릴 수 있다 — sqlite 기본값이면 close 가
+    ProgrammingError 로 터진다 (요청이 동시에 들어올 때만 재현되므로 curl
+    단건으로는 안 잡힌다. 실측 2026-08-25). 사용은 요청 안에서 순차라
+    check_same_thread=False 가 안전하다. 웹(get_conn)만 켠다.
     """
     if read_only:
-        conn = sqlite3.connect(f"file:{Path(path)}?mode=ro", uri=True)
+        conn = sqlite3.connect(f"file:{Path(path)}?mode=ro", uri=True,
+                               check_same_thread=not cross_thread)
     else:
-        conn = sqlite3.connect(str(path))
+        conn = sqlite3.connect(str(path), check_same_thread=not cross_thread)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA busy_timeout = 5000")
@@ -365,7 +373,8 @@ class RunWriter:
     """
 
     def __init__(self, conn: sqlite3.Connection, header: dict, *, name: str,
-                 image_dir: Path | None = None, source: str = "live"):
+                 image_dir: Path | None = None, source: str = "live",
+                 job_id: int | None = None):
         self.conn = conn
         self.image_dir = Path(image_dir) if image_dir else None
         if self.image_dir:
@@ -373,6 +382,10 @@ class RunWriter:
         self._n = 0
         self._t0 = time.time()
         self._tallies: dict[str, dict] = {}
+        # 잡에서 돌면 probe 마다 진행률을 **같은 트랜잭션**에서 갱신한다 —
+        # 진행률 배선이 explore() 를 안 지나가고, "판정은 남았는데 진행이
+        # 안 맞는" 상태도 없다
+        self.job_id = job_id
         self._finished = False
 
         prompt = header.get("prompt") or {}
@@ -426,6 +439,10 @@ class RunWriter:
             latency_ms=round(verdict.latency_ms, 1), src_format=src_format,
             image_path=image_path, sample_id=sample_id, label=label,
             created_at=_now())
+        if self.job_id is not None:
+            set_job_progress(self.conn, self.job_id,
+                             {"verdicts": self._n,
+                              "elapsed_s": round(time.time() - self._t0, 1)})
         self.conn.commit()   # 판정 1건 = 커밋 1번. 중간에 죽어도 거기까지는 남는다
 
     def event(self, kind: str, **kw) -> None:
@@ -481,3 +498,324 @@ class RunWriter:
         # finish 없이 나가면(예외) run 은 finished_at IS NULL 로 남는다 — 그게
         # "중간에 죽은 런" 의 정직한 표현이다. 여기서 몰래 닫지 않는다.
         return False
+
+
+# ── 질의 — 웹과 CLI 가 같은 것을 쓴다. 전부 dict 를 돌려준다 ─────────────────
+
+def run_ids_for(conn: sqlite3.Connection, *, prompt_version: str | None = None,
+                run_id: int | None = None) -> list[int]:
+    """뷰포트 조회가 집계할 run 집합.
+
+    기본 필터가 "프롬프트 버전 하나" 인 이유: MAX 집계는 한 pano 안의
+    **방위들** 사이 규칙이다. 백필로 한 점에 v1~v6 이 섞였는데 버전을
+    가로질러 MAX 를 걸면 폐기된 버전의 오탐 하나가 그 점을 영원히
+    초록으로 만든다 — v3 의 골목 오탐이 정확히 그 모양이다.
+    """
+    if run_id is not None:
+        # 존재 확인 없이 [run_id] 를 돌려주면 호출자의 "빈 집합 = 파라미터
+        # 오류" 가드가 무효가 된다 — 없는 런이 조용히 빈 지도가 되는 그 실패
+        row = conn.execute("SELECT 1 FROM run WHERE run_id = ?",
+                           (run_id,)).fetchone()
+        return [run_id] if row else []
+    if prompt_version:
+        return [r[0] for r in conn.execute(
+            "SELECT run_id FROM run WHERE prompt_version = ?", (prompt_version,))]
+    return [r[0] for r in conn.execute("SELECT run_id FROM run")]
+
+
+def viewport(conn: sqlite3.Connection, *, s: float, w: float, n: float, e: float,
+             run_ids: list[int], limit: int,
+             with_headings: bool = False) -> tuple[list[dict], bool]:
+    """bbox 안의 pano 를 판정 MAX 집계와 함께. (rows, truncated).
+
+    GROUP BY 를 안 쓰는 이유: bbox 인덱스는 lat 순으로 행을 주는데 그룹
+    키가 pano_id 라 SQLite 가 임시 B-tree 정렬을 붙인다. 상관 서브쿼리는
+    그 정렬이 없고, verdict_agg 커버링 인덱스만 탄다 (테스트가 실행계획을
+    고정한다). LIMIT+1 로 잘림을 **감지**해 truncated 로 알린다 — 조용히
+    일부만 그리면 "안 본 것" 과 "없는 것" 이 섞인다.
+    """
+    ids = json.dumps(run_ids)
+    q = """
+    SELECT p.pano_id, p.lat, p.lng,
+      (SELECT MAX(v.nature_level) FROM verdict v WHERE v.pano_id = p.pano_id
+         AND v.run_id IN (SELECT value FROM json_each(:ids))) AS nature_level,
+      (SELECT MAX(v.is_trail) FROM verdict v WHERE v.pano_id = p.pano_id
+         AND v.run_id IN (SELECT value FROM json_each(:ids))) AS is_trail,
+      (SELECT COUNT(*) FROM verdict v WHERE v.pano_id = p.pano_id
+         AND v.run_id IN (SELECT value FROM json_each(:ids))) AS n,
+      (SELECT l.is_trail FROM label l WHERE l.pano_id = p.pano_id
+         AND l.heading IS NULL) AS label
+    FROM pano p
+    WHERE p.lat BETWEEN :s AND :n AND p.lng BETWEEN :w AND :e
+      -- 선택된 런에 판정이 있는 pano 만. 이 필터는 **LIMIT 앞**(SQL 안)이어야
+      -- 한다 — 뒤에서 파이썬으로 거르면 LIMIT 예산이 다른 버전의 행에
+      -- 소진돼, 진짜 매칭 pano 가 빠졌는데 truncated 는 False 가 된다
+      AND EXISTS (SELECT 1 FROM verdict v WHERE v.pano_id = p.pano_id
+                    AND v.run_id IN (SELECT value FROM json_each(:ids)))
+    LIMIT :lim
+    """
+    rows = [dict(r) for r in conn.execute(
+        q, {"ids": ids, "s": s, "n": n, "w": w, "e": e, "lim": limit + 1})]
+    truncated = len(rows) > limit
+    rows = rows[:limit]
+    if with_headings and rows:
+        marks = ",".join("?" for _ in rows)
+        hs: dict[str, list] = {}
+        for v in conn.execute(
+                f"SELECT pano_id, heading, is_trail, nature_level FROM verdict "
+                f"WHERE pano_id IN ({marks}) AND run_id IN "
+                f"(SELECT value FROM json_each(?)) ORDER BY heading",
+                [r["pano_id"] for r in rows] + [ids]):
+            hs.setdefault(v["pano_id"], []).append(
+                {"heading": v["heading"], "is_trail": v["is_trail"],
+                 "nature_level": v["nature_level"]})
+        for r in rows:
+            r["headings"] = hs.get(r["pano_id"], [])
+    return rows, truncated
+
+
+def pano_detail(conn: sqlite3.Connection, pano_id: str) -> dict | None:
+    """그 pano 의 판정 이력 전부 — 버전 필터 없이. 호버/클릭 패널이 쓴다.
+    같은 지점을 v4/v5/v6 가 다르게 봤다면 그 자리에서 보여야 한다."""
+    p = conn.execute("SELECT * FROM pano WHERE pano_id = ?", (pano_id,)).fetchone()
+    if p is None:
+        return None
+    verdicts = [dict(v) for v in conn.execute(
+        "SELECT v.verdict_id, v.run_id, r.name AS run_name, r.prompt_version,"
+        " v.heading, v.step, v.is_trail, v.confidence, v.camera_surface,"
+        " v.nature_level, v.footway, v.latency_ms, v.created_at,"
+        " v.image_path IS NOT NULL AS has_image"
+        " FROM verdict v JOIN run r USING(run_id)"
+        " WHERE v.pano_id = ? ORDER BY v.verdict_id", (pano_id,))]
+    labels = [dict(r) for r in conn.execute(
+        "SELECT * FROM label WHERE pano_id = ?", (pano_id,))]
+    return {"pano": dict(p), "verdicts": verdicts, "labels": labels}
+
+
+def runs_list(conn: sqlite3.Connection, limit: int = 100) -> list[dict]:
+    return [dict(r) for r in conn.execute(
+        "SELECT run_id, name, kind, provider, source, started_at, finished_at,"
+        " stop_reason, wall_s, prompt_version, schema_name,"
+        " (SELECT COUNT(*) FROM verdict v WHERE v.run_id = run.run_id) AS verdicts,"
+        " (SELECT COUNT(*) FROM warning w WHERE w.run_id = run.run_id) AS warnings"
+        " FROM run ORDER BY started_at DESC LIMIT ?", (limit,))]
+
+
+def run_detail(conn: sqlite3.Connection, run_id: int) -> dict | None:
+    r = conn.execute(
+        "SELECT run_id, name, kind, provider, source, started_at, finished_at,"
+        " stop_reason, wall_s, start_lat, start_lng, origin_pano, prompt_version,"
+        " prompt_sha256, schema_name, min_nature_level, require_footway,"
+        " trail_surfaces_json, summary_json"
+        " FROM run WHERE run_id = ?", (run_id,)).fetchone()
+    # vlm_url(LAN IP)과 header_json(그 안에 url)은 일부러 안 낸다 — 이 응답은
+    # 브라우저로 나가고, 페이지를 캡처해 공유하는 순간 주소가 새는 자리다
+    if r is None:
+        return None
+    d = dict(r)
+    d["warnings"] = [dict(w) for w in conn.execute(
+        "SELECT kind, code, count, message FROM warning WHERE run_id = ?"
+        " ORDER BY warning_id", (run_id,))]
+    return d
+
+
+def image_path_of(conn: sqlite3.Connection, verdict_id: int) -> str | None:
+    r = conn.execute("SELECT image_path FROM verdict WHERE verdict_id = ?",
+                     (verdict_id,)).fetchone()
+    return r["image_path"] if r else None
+
+
+def prompt_versions(conn: sqlite3.Connection) -> list[dict]:
+    """버전 드롭다운의 재료 — 버전마다 판정이 몇 건인지."""
+    return [dict(r) for r in conn.execute(
+        "SELECT r.prompt_version, COUNT(*) AS verdicts,"
+        " COUNT(DISTINCT r.run_id) AS runs"
+        " FROM verdict v JOIN run r USING(run_id)"
+        " GROUP BY r.prompt_version ORDER BY r.prompt_version")]
+
+
+def counts(conn: sqlite3.Connection) -> dict:
+    """/api/health 용. pano 수는 R*Tree 로 갈아탈 때를 아는 계기판이기도 하다."""
+    return {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+            for t in ("pano", "verdict", "run", "label", "job")}
+
+
+# ── 라벨 — 이 스키마에서 UPDATE 되는 유일한 것 ──────────────────────────────
+
+def put_label(conn: sqlite3.Connection, *, pano_id: str, is_trail: bool,
+              note: str | None = None, heading: float | None = None,
+              author: str = "local", updated_at: str | None = None) -> dict:
+    """만들거나 고친다. created_at 은 처음 값을 지키고 updated_at 만 움직인다 —
+    "언제 이 판단을 마지막으로 손봤나" 가 라벨과 판정을 가르는 필드다.
+
+    pano 가 DB 에 없으면 sqlite3.IntegrityError (FK) — 지도에 없는 점에
+    라벨을 붙이는 것은 오타이지 데이터가 아니다. 호출자(API)가 404 로 바꾼다.
+    """
+    now = updated_at or _now()
+    hkey = -1.0 if heading is None else heading
+    row = conn.execute(
+        "SELECT label_id FROM label WHERE pano_id = ? "
+        "AND COALESCE(heading, -1.0) = ?", (pano_id, hkey)).fetchone()
+    if row:
+        conn.execute(
+            "UPDATE label SET is_trail = ?, note = ?, author = ?, updated_at = ? "
+            "WHERE label_id = ?",
+            (int(is_trail), note, author, now, row["label_id"]))
+        label_id = row["label_id"]
+    else:
+        label_id = conn.execute(
+            "INSERT INTO label (pano_id, heading, is_trail, note, author,"
+            " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (pano_id, heading, int(is_trail), note, author, now, now)).lastrowid
+    conn.commit()
+    return dict(conn.execute("SELECT * FROM label WHERE label_id = ?",
+                             (label_id,)).fetchone())
+
+
+def delete_label(conn: sqlite3.Connection, label_id: int) -> bool:
+    cur = conn.execute("DELETE FROM label WHERE label_id = ?", (label_id,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def iter_labels(conn: sqlite3.Connection):
+    """내보내기 형식의 **정본**. 웹 라우트(/api/labels/export)와 CLI
+    (export_labels.py)가 같은 dict 를 쓴다 — 형식이 두 곳에 적히면 갈라진다.
+
+    - type 을 web_label 로 둔다: labels/ 파이프라인의 labels.jsonl 과 파일이
+      섞여도 apply_review·report_eval 이 조용히 먹지 않게 (저쪽은 type 없는
+      sample/label 행이다)
+    - 좌표를 함께 싣는다: 복원할 DB 에 pano 행이 없어도 되살릴 수 있어야
+      한다 — DB 는 gitignore 라 이 파일이 라벨의 유일한 백업이다
+    """
+    for r in conn.execute(
+            "SELECT l.*, p.lat, p.lng FROM label l JOIN pano p USING(pano_id) "
+            "ORDER BY l.label_id"):
+        yield {"type": "web_label", "pano_id": r["pano_id"],
+               "lat": r["lat"], "lng": r["lng"], "heading": r["heading"],
+               "is_trail": bool(r["is_trail"]), "note": r["note"],
+               "author": r["author"], "created_at": r["created_at"],
+               "updated_at": r["updated_at"]}
+
+
+def restore_label(conn: sqlite3.Connection, rec: dict) -> str:
+    """내보낸 한 줄을 되살린다. 반환 ∈ {restored, kept}.
+
+    이미 있는 라벨이 더 최신(updated_at)이면 건드리지 않는다 — 복원이
+    그 사이의 새 판단을 덮어쓰면 백업이 데이터를 지우는 도구가 된다.
+    """
+    hkey = -1.0 if rec.get("heading") is None else rec["heading"]
+    row = conn.execute(
+        "SELECT updated_at FROM label WHERE pano_id = ? "
+        "AND COALESCE(heading, -1.0) = ?", (rec["pano_id"], hkey)).fetchone()
+    if row and row["updated_at"] >= rec["updated_at"]:
+        return "kept"
+    upsert_pano(conn, rec["pano_id"], rec["lat"], rec["lng"])
+    put_label(conn, pano_id=rec["pano_id"], is_trail=rec["is_trail"],
+              note=rec.get("note"), heading=rec.get("heading"),
+              author=rec.get("author", "restore"), updated_at=rec["updated_at"])
+    return "restored"
+
+
+# ── 잡 큐 — 웹이 넣고 워커 데몬이 집는다 ────────────────────────────────────
+
+def enqueue_job(conn: sqlite3.Connection, *, start_lat: float, start_lng: float,
+                bearing: float, radius_m: float, max_seconds: float,
+                config_path: str | None = None) -> dict:
+    jid = conn.execute(
+        "INSERT INTO job (state, start_lat, start_lng, bearing, radius_m,"
+        " max_seconds, config_path, created_at) "
+        "VALUES ('queued', ?, ?, ?, ?, ?, ?, ?)",
+        (start_lat, start_lng, bearing, radius_m, max_seconds,
+         config_path, _now())).lastrowid
+    conn.commit()
+    return job_row(conn, jid)
+
+
+def claim_job(conn: sqlite3.Connection, worker_id: str) -> dict | None:
+    """queued 하나를 원자적으로 집는다.
+
+    단일 UPDATE 라 두 워커가 동시에 불러도 하나만 행을 얻는다. 데몬이
+    하나라는 운영 전제를 믿지 않는 이유는 **재시작 중첩**이다 — 옛
+    프로세스가 안 죽은 채 새것이 뜨는 일이 실제로 흔하다.
+    """
+    now = _now()
+    row = conn.execute(
+        "UPDATE job SET state = 'claimed', worker_id = ?, claimed_at = ?,"
+        " heartbeat_at = ? "
+        "WHERE job_id = (SELECT job_id FROM job WHERE state = 'queued'"
+        "                ORDER BY job_id LIMIT 1) "
+        "  AND state = 'queued' RETURNING *", (worker_id, now, now)).fetchone()
+    conn.commit()
+    return dict(row) if row else None
+
+
+def job_row(conn: sqlite3.Connection, job_id: int) -> dict | None:
+    r = conn.execute("SELECT * FROM job WHERE job_id = ?", (job_id,)).fetchone()
+    return dict(r) if r else None
+
+
+def jobs_list(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
+    return [dict(r) for r in conn.execute(
+        "SELECT * FROM job ORDER BY job_id DESC LIMIT ?", (limit,))]
+
+
+def heartbeat_job(conn: sqlite3.Connection, job_id: int,
+                  state: str | None = None) -> None:
+    if state:
+        conn.execute("UPDATE job SET heartbeat_at = ?, state = ? WHERE job_id = ?",
+                     (_now(), state, job_id))
+    else:
+        conn.execute("UPDATE job SET heartbeat_at = ? WHERE job_id = ?",
+                     (_now(), job_id))
+    conn.commit()
+
+
+def set_job_progress(conn: sqlite3.Connection, job_id: int, progress: dict) -> None:
+    conn.execute("UPDATE job SET progress_json = ? WHERE job_id = ?",
+                 (json.dumps(progress, ensure_ascii=False), job_id))
+    # 커밋은 호출자(RunWriter.probe 의 트랜잭션)가 한다 — 판정과 진행이
+    # 같은 커밋 경계 안에 있어야 "판정은 남았는데 진행이 안 맞는" 상태가 없다
+
+
+def request_cancel(conn: sqlite3.Connection, job_id: int) -> dict | None:
+    """queued 면 즉시 canceled, 실행 중이면 cancel_requested 만 세운다 —
+    실제 중단은 워커가 다음 후보 경계에서 한다 (explore 의 cancel 콜백)."""
+    conn.execute("UPDATE job SET state = 'canceled', finished_at = ? "
+                 "WHERE job_id = ? AND state = 'queued'", (_now(), job_id))
+    conn.execute("UPDATE job SET cancel_requested = 1 "
+                 "WHERE job_id = ? AND state IN ('claimed', 'running')", (job_id,))
+    conn.commit()
+    return job_row(conn, job_id)
+
+
+def cancel_requested(conn: sqlite3.Connection, job_id: int) -> bool:
+    r = conn.execute("SELECT cancel_requested FROM job WHERE job_id = ?",
+                     (job_id,)).fetchone()
+    return bool(r and r["cancel_requested"])
+
+
+def finish_job(conn: sqlite3.Connection, job_id: int, *, state: str,
+               run_id: int | None = None, stop_reason: str | None = None,
+               error: str | None = None) -> None:
+    conn.execute(
+        "UPDATE job SET state = ?, run_id = ?, stop_reason = ?, error = ?,"
+        " finished_at = ? WHERE job_id = ?",
+        (state, run_id, stop_reason, error, _now(), job_id))
+    conn.commit()
+
+
+def reap_stale_jobs(conn: sqlite3.Connection, lease_s: float) -> int:
+    """하트비트가 lease 를 넘긴 잡을 failed 로 접는다. **자동 재큐잉은 안
+    한다** — 6시간짜리가 절반에서 조용히 다시 시작되면 판정이 두 벌 쌓이고
+    사용자는 왜 두 배 걸렸는지 모른다. 이미 기록된 판정은 그대로 유효하다
+    (판정 불변). 사람이 "다시" 를 누르면 새 잡·새 런이다.
+    """
+    cutoff = (datetime.now(UTC) - timedelta(seconds=lease_s)
+              ).isoformat(timespec="seconds")
+    cur = conn.execute(
+        "UPDATE job SET state = 'failed', error = 'worker_lost', finished_at = ? "
+        "WHERE state IN ('claimed', 'running') AND heartbeat_at < ?",
+        (_now(), cutoff))
+    conn.commit()
+    return cur.rowcount

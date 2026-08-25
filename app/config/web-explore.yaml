@@ -1,0 +1,6 @@
+# 웹 잡 전용 — 실제 로드뷰를 돈다. 나머지는 전부 정본(trailwalk.yaml)을 따른다.
+# 여기 vlm.url 을 두지 않는 것: 정본의 로컬 주소를 그대로 쓴다. 원격 GPU 로
+# 돌리려면 이 파일을 레포 밖(bench-runs/)에 복사해 url 을 넣고, 잡 생성 시
+# config_path 로 그 절대경로를 넘긴다 (public 레포에 LAN IP 금지).
+run:
+  provider: kakao

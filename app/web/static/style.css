@@ -1,0 +1,72 @@
+/* 로컬 도구다 — 프레임워크 없이 필요한 것만. 색 토큰은 eval/plot_explore.py
+   (GOOD #0ca30c · CRIT #d03b3b · MUTE #78787a · INK #1a1a1a)와 맞춘다.
+   같은 개념이 SVG 산출물과 웹에서 다른 색이면 안 된다. */
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; font: 13px/1.5 system-ui, sans-serif; color: #1a1a1a; }
+
+#topbar {
+  position: fixed; inset: 0 0 auto 0; z-index: 20; height: 40px;
+  display: flex; align-items: center; gap: 14px; padding: 0 12px;
+  background: #fff; border-bottom: 1px solid #ddd;
+}
+#topbar select { font: inherit; }
+#stat { color: #78787a; }
+#banner { background: #d03b3b; color: #fff; padding: 2px 8px; border-radius: 3px; }
+#legend { margin-left: auto; color: #555; display: flex; align-items: center; gap: 4px; }
+#legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
+#legend i.ring { background: #fff; border: 2.5px solid #1a1a1a; }
+
+#map { position: fixed; inset: 40px 0 0 0; }
+
+/* 판정 레이어 — 지도 컨테이너 위에 절대배치한 캔버스 하나. 클릭은 지도가
+   받아야 하므로(팬·줌) pointer-events 를 끊고, 히트테스트는 JS 가 한다 */
+canvas.pano-layer { position: absolute; inset: 0; pointer-events: none; z-index: 10; }
+
+#tooltip {
+  position: fixed; z-index: 30; max-width: 340px; padding: 6px 9px;
+  background: rgba(26,26,26,.92); color: #fff; border-radius: 4px;
+  pointer-events: none; font-size: 12px;
+}
+#tooltip table { border-collapse: collapse; }
+#tooltip td { padding: 0 6px 0 0; white-space: nowrap; }
+
+#panel {
+  position: fixed; top: 40px; right: 0; bottom: 0; z-index: 25; width: 380px;
+  background: #fff; border-left: 1px solid #ddd; overflow-y: auto; padding: 12px;
+}
+#panel-close { position: absolute; top: 6px; right: 8px; border: 0; background: none;
+  font-size: 18px; cursor: pointer; color: #78787a; }
+#panel h3 { margin: 0 0 4px; font-size: 14px; }
+#panel .muted { color: #78787a; }
+#panel table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 12px; }
+#panel th, #panel td { text-align: left; padding: 3px 6px; border-bottom: 1px solid #eee; }
+#panel tr.sel { background: #eef6ee; }
+#panel tr.clickable { cursor: pointer; }
+#panel img { width: 100%; border: 1px solid #ddd; border-radius: 3px; }
+#panel .noimg { padding: 24px 12px; background: #f4f4f5; color: #78787a;
+  text-align: center; border-radius: 3px; }
+
+#fatal { position: fixed; inset: 40px 0 0 0; z-index: 40; padding: 40px;
+  background: #fff; white-space: pre-wrap; color: #d03b3b; }
+
+.labelbox { margin: 8px 0; padding: 8px; background: #f7f7f8; border-radius: 4px; }
+.labelbtns { display: flex; gap: 6px; margin: 6px 0; }
+.labelbtns button { font: inherit; padding: 4px 10px; border: 1px solid #ccc;
+  border-radius: 4px; background: #fff; cursor: pointer; }
+.labelbtns button:hover { background: #eee; }
+#labelnote { width: 100%; font: inherit; padding: 4px 6px; border: 1px solid #ccc;
+  border-radius: 4px; }
+
+#jobs { position: fixed; left: 10px; bottom: 10px; z-index: 25; width: 300px;
+  background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 8px 10px;
+  box-shadow: 0 2px 8px rgba(0,0,0,.12); font-size: 12px; }
+#jobs .muted { color: #78787a; font-weight: normal; }
+#jobs-head { font-weight: 600; margin-bottom: 4px; }
+#jobs-list .job { display: flex; gap: 6px; align-items: center; padding: 3px 0;
+  border-top: 1px solid #f0f0f0; }
+#jobs-list .job button { border: 0; background: none; cursor: pointer; color: #d03b3b; }
+#jobs .hint { color: #b06000; margin-top: 4px; }
+.jobform label { display: flex; justify-content: space-between; margin: 6px 0; }
+.jobform input { width: 130px; font: inherit; padding: 2px 6px; }
+.jobform .go { margin-top: 8px; font: inherit; padding: 6px 12px; cursor: pointer;
+  border: 1px solid #0ca30c; color: #0ca30c; background: #fff; border-radius: 4px; }
