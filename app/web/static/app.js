@@ -23,7 +23,12 @@ async function main() {
     return;
   }
   currentVersion = cfg.prompt_version;
-  await loadSdk(cfg.kakao_js_key);
+  try {
+    await loadSdk(cfg.kakao_js_key);
+  } catch (e) {
+    fatal(e.message);
+    return;
+  }
   kakao.maps.load(init);
 }
 
@@ -31,11 +36,19 @@ function loadSdk(key) {
   return new Promise((ok, bad) => {
     const s = document.createElement("script");
     // autoload=false: kakao.maps.load 콜백으로 초기화 시점을 우리가 잡는다
-    s.src = `//dapi.kakao.com/v2/maps/sdk.js?appkey=${key}&autoload=false&libraries=services`;
+    s.src = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${key}&autoload=false&libraries=services`;
     s.onload = ok;
-    // 도메인 미등록이면 스크립트는 로드되고 지도만 안 뜬다 — 그 경우는
-    // 콘솔에 Kakao 쪽 메시지가 남는다. 여기 onerror 는 네트워크 실패용
-    s.onerror = () => bad(new Error("SDK 로드 실패 — 네트워크나 키를 확인"));
+    // 도메인 미등록이면 Kakao 가 JSON 에러를 주고 브라우저(ORB)가 스크립트
+    // 로드를 막는다 — 즉 여기 onerror 로 온다 (실측 2026-08-25:
+    // "domain mismatched! caller=<origin>"). 네트워크 실패도 같은 경로다
+    s.onerror = () => bad(new Error(
+      "Kakao 지도 SDK 로드 실패.\n\n" +
+      "가장 흔한 원인: 이 origin 이 Kakao 콘솔에 등록돼 있지 않다.\n" +
+      "해결: Kakao developers 콘솔 > 내 애플리케이션 > 앱 설정 > 플랫폼 > " +
+      `Web 에\n\n    ${location.origin}\n\n을 추가 등록할 것.\n` +
+      "등록은 프로토콜·호스트·포트가 전부 정확히 일치해야 한다 — " +
+      "localhost 와 127.0.0.1 은 서로 다른 도메인이다.\n\n" +
+      "그 밖의 원인: 네트워크 차단, JS 키 오류 (app/.env 의 KAKAO_MAP_JS_API_KEY)."));
     document.head.appendChild(s);
   });
 }
@@ -47,6 +60,9 @@ function init() {
     level: 5,
   });
   layer = new PanoLayer(map, el);
+  // 디버그 핸들 — 헤드리스 검증(uicheck)과 콘솔 진단이 모듈 내부에 닿는
+  // 유일한 통로. 앱 코드는 이걸 통해 아무것도 하지 않는다
+  window._tw = { map, layer };
   fillVersions();
   // idle 은 팬·줌이 **멎은 뒤** 한 번 뜬다 — SDK 가 1차 디바운스를 해 준다.
   // bounds_changed 는 연속으로 뜨므로 그리기 갱신(layer 내부)에만 쓴다

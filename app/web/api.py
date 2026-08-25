@@ -58,7 +58,9 @@ class JobIn(BaseModel):
 
 
 def get_conn(request: Request):
-    conn = store.connect(request.app.state.db)
+    # cross_thread: FastAPI 가 이 제너레이터의 finally 를 다른 스레드에서
+    # 돌릴 수 있다 (→ store.connect 도크스트링)
+    conn = store.connect(request.app.state.db, cross_thread=True)
     try:
         yield conn
     finally:

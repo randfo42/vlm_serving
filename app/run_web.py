@@ -48,10 +48,14 @@ def main() -> int:
               f"노출된다. 배포 범위를 넓히려면 docs/23 §2(약관)부터 볼 것",
               file=sys.stderr)
     print(f"DB: {db}")
-    # 접속 주소는 바인드 주소가 아니라 Kakao 콘솔에 등록된 도메인 쪽이어야
-    # 한다 — Kakao 는 localhost 와 127.0.0.1 을 다른 도메인으로 본다.
-    # 지도가 빈 화면이면 이 줄이 첫 번째 확인 대상이다 (→ trailwalk.yaml web:)
-    print(f"접속: http://localhost:{port}/  (Kakao 도메인 등록이 localhost 기준)")
+    # 접속 주소는 바인드 주소가 아니라 Kakao 콘솔에 등록된 origin 이어야
+    # 한다. 등록은 프로토콜·호스트·포트 전부 일치 기준이다 (실측 2026-08-25:
+    # 127.0.0.1:8731 만 200, localhost 는 포트 불문 401, 127.0.0.1 의 다른
+    # 포트는 "domain mismatched"). 지도가 빈 화면이면 여기가 첫 확인 대상이다
+    print(f"접속: http://127.0.0.1:{port}/")
+    print(f"지도가 안 뜨면: Kakao 콘솔 > 앱 설정 > 플랫폼 > Web 에 "
+          f"http://127.0.0.1:{port} 을 추가 등록할 것 (포트까지 정확히 일치. "
+          f"localhost 와 127.0.0.1 은 다른 도메인)")
     uvicorn.run(app, host=host, port=port, log_level="warning")
     return 0
 

@@ -188,16 +188,24 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
-def connect(path: Path | str, *, read_only: bool = False) -> sqlite3.Connection:
+def connect(path: Path | str, *, read_only: bool = False,
+            cross_thread: bool = False) -> sqlite3.Connection:
     """PRAGMA 까지 적용된 커넥션. 닫는 것은 호출자 몫이다.
 
     웹은 요청마다 열고 닫는다 — 리더가 커넥션을 오래 잡으면 스냅샷 때문에
     WAL 체크포인트가 못 돌아, 6시간 런 동안 WAL 파일이 계속 자란다.
+
+    cross_thread: FastAPI 는 sync 의존성의 생성과 정리(close)를 서로 다른
+    threadpool 스레드에서 돌릴 수 있다 — sqlite 기본값이면 close 가
+    ProgrammingError 로 터진다 (요청이 동시에 들어올 때만 재현되므로 curl
+    단건으로는 안 잡힌다. 실측 2026-08-25). 사용은 요청 안에서 순차라
+    check_same_thread=False 가 안전하다. 웹(get_conn)만 켠다.
     """
     if read_only:
-        conn = sqlite3.connect(f"file:{Path(path)}?mode=ro", uri=True)
+        conn = sqlite3.connect(f"file:{Path(path)}?mode=ro", uri=True,
+                               check_same_thread=not cross_thread)
     else:
-        conn = sqlite3.connect(str(path))
+        conn = sqlite3.connect(str(path), check_same_thread=not cross_thread)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA busy_timeout = 5000")
